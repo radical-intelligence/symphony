@@ -1,0 +1,7 @@
+Host symphony-host
+  HostName host.docker.internal
+  User pandemosthenous
+  Port 22
+  IdentityFile /run/secrets/symphony_worker_ed25519
+  StrictHostKeyChecking accept-new
+

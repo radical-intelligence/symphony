@@ -13,15 +13,24 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 ## How it works
 
-1. Polls Linear for candidate work
+1. Polls the configured tracker for candidate work
 2. Creates a workspace per issue
 3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
    workspace
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+Supported tracker adapters today:
+
+- `linear`: polls a Linear project via GraphQL
+- `notion`: polls a Notion data source via the REST API
+- `memory`: in-memory tracker for tests and local harnesses
+
+During tracker-backed app-server sessions, Symphony also serves a client-side tool for raw tracker
+access:
+
+- `linear_graphql` for Linear workflows
+- `notion_api` for Notion workflows
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -30,18 +39,27 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
 
 1. Make sure your codebase is set up to work well with agents: see
    [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
+2. Choose your tracker credentials.
+   - Linear: get a new personal token via Settings → Security & access → Personal API keys, and
+     set it as the `LINEAR_API_KEY` environment variable.
+   - Notion: create an internal integration, share the target data source with it, and set the
+     integration token as the `NOTION_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
      operations such as comment editing or upload flows.
 5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
+   - Linear:
+     - To get your project's slug, right-click the project and copy its URL. The slug is part of
+       the URL.
+     - When creating a workflow based on this repo, note that it depends on non-standard Linear
+       issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
+       Team Settings → Workflow in Linear.
+   - Notion:
+     - Set `tracker.kind: notion`.
+     - Set `tracker.data_source_id` to the target Notion data source ID.
+     - If you want Symphony to route only tasks assigned to a specific user, set
+       `tracker.assignee` and `tracker.assignee_property`.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
@@ -75,6 +93,11 @@ Pass a custom workflow file path to `./bin/symphony` when starting the service:
 
 If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 
+For a local Notion tracker smoke test in this repo, you can start from
+`./WORKFLOW.notion.smoke.md`.
+
+For a fuller Notion end-to-end workflow template, start from `./WORKFLOW.notion.md`.
+
 Optional flags:
 
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
@@ -83,7 +106,7 @@ Optional flags:
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
 
-Minimal example:
+Minimal Linear example:
 
 ```md
 ---
@@ -107,6 +130,42 @@ You are working on a Linear issue {{ issue.identifier }}.
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
 
+Minimal Notion example:
+
+```md
+---
+tracker:
+  kind: notion
+  data_source_id: "..."
+  api_key: $NOTION_API_KEY
+  assignee: $NOTION_ASSIGNEE
+  assignee_property: Assignee
+  active_states:
+    - Not started
+    - In progress
+workspace:
+  root: ~/code/workspaces
+hooks:
+  after_create: |
+    git clone git@github.com:your-org/your-repo.git .
+agent:
+  max_concurrent_agents: 10
+  max_turns: 20
+codex:
+  command: codex app-server
+---
+
+You are working on task {{ issue.identifier }}.
+
+Title: {{ issue.title }} Body: {{ issue.description }}
+```
+
+Reference Notion workflow templates in this repo:
+
+- `./WORKFLOW.notion.md`: fuller end-to-end Notion workflow using `notion_api`
+- `./WORKFLOW.notion.smoke.md`: low-risk local smoke test that proves polling, workspace bootstrap,
+  tool access, and comment round-tripping
+
 Notes:
 
 - If a value is missing, defaults are used.
@@ -127,7 +186,22 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
+- `tracker.endpoint` defaults to `https://api.linear.app/graphql` for `tracker.kind: linear` and
+  `https://api.notion.com/v1` for `tracker.kind: notion`.
+- `tracker.api_key` reads from `LINEAR_API_KEY` for Linear and `NOTION_API_KEY` for Notion when
+  unset or when value is `$LINEAR_API_KEY` / `$NOTION_API_KEY`.
+- `tracker.project_slug` is required for Linear workflows.
+- `tracker.data_source_id` is required for Notion workflows.
+- If `tracker.assignee` is set for a Notion workflow, `tracker.assignee_property` is also
+  required.
+- Notion workflows require a title property plus a `status` or `select` property for task state.
+  Optional overrides are available for `status_property`, `title_property`,
+  `identifier_property`, `description_property`, `labels_property`, `priority_property`, and
+  `assignee_property`.
+- Notion agent sessions get a raw `notion_api` tool rooted at the configured Notion endpoint and
+  auth. The tool accepts a relative REST path plus optional HTTP method and JSON body.
+- The bundled Notion workflow template uses append-only page comments for progress/handoff notes
+  rather than trying to edit a single persistent comment in place.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
@@ -202,6 +276,9 @@ Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH h
 The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
 a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
 Linear issue, then marks the project completed so the run remains visible in Linear.
+
+The live end-to-end path is currently Linear-only. Notion tracker coverage is exercised via the
+unit and integration-style tests under `test/symphony_elixir/notion_client_test.exs`.
 
 ## FAQ
 

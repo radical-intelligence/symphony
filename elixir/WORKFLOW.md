@@ -1,7 +1,18 @@
 ---
 tracker:
-  kind: linear
+  kind: linear # Reference workflow uses Linear; runtime also supports notion
   project_slug: "symphony-0c79b11b75ea"
+  # For notion workflows, replace project_slug with:
+  # data_source_id: "<notion-data-source-id>"
+  # assignee: $NOTION_ASSIGNEE
+  # assignee_property: "Assignee"
+  # Optional Notion property overrides:
+  # status_property: "Status"
+  # title_property: "Task"
+  # identifier_property: "Identifier"
+  # description_property: "Description"
+  # labels_property: "Labels"
+  # priority_property: "Priority"
   active_states:
     - Todo
     - In Progress

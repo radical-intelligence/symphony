@@ -86,6 +86,36 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_api_token: "notion-token",
+      tracker_data_source_id: nil
+    )
+
+    assert {:error, :missing_notion_data_source_id} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_endpoint: nil,
+      tracker_api_token: "notion-token",
+      tracker_data_source_id: "source-1",
+      tracker_assignee: "user-1",
+      tracker_assignee_property: nil
+    )
+
+    assert {:error, :missing_notion_assignee_property} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_endpoint: nil,
+      tracker_api_token: "notion-token",
+      tracker_data_source_id: "source-1",
+      tracker_assignee: "user-1",
+      tracker_assignee_property: "Assignee"
+    )
+
+    assert :ok = Config.validate!()
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -147,6 +177,43 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+  end
+
+  test "notion api token and assignee resolve from NOTION env vars" do
+    previous_notion_api_key = System.get_env("NOTION_API_KEY")
+    previous_notion_assignee = System.get_env("NOTION_ASSIGNEE")
+    previous_notion_data_source_id = System.get_env("NOTION_DATA_SOURCE_ID")
+    env_api_key = "test-notion-api-key"
+    env_assignee = "notion-user-id"
+    env_data_source_id = "env-source-1"
+
+    on_exit(fn ->
+      restore_env("NOTION_API_KEY", previous_notion_api_key)
+      restore_env("NOTION_ASSIGNEE", previous_notion_assignee)
+      restore_env("NOTION_DATA_SOURCE_ID", previous_notion_data_source_id)
+    end)
+
+    System.put_env("NOTION_API_KEY", env_api_key)
+    System.put_env("NOTION_ASSIGNEE", env_assignee)
+    System.put_env("NOTION_DATA_SOURCE_ID", env_data_source_id)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_endpoint: nil,
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_data_source_id: "$NOTION_DATA_SOURCE_ID",
+      tracker_assignee: nil,
+      tracker_assignee_property: "Assignee",
+      codex_command: "/bin/sh app-server"
+    )
+
+    config = Config.settings!()
+    assert config.tracker.endpoint == "https://api.notion.com/v1"
+    assert config.tracker.api_key == env_api_key
+    assert config.tracker.assignee == env_assignee
+    assert config.tracker.data_source_id == env_data_source_id
+    assert :ok = Config.validate!()
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do

@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
-  test "tool_specs advertises the linear_graphql input contract" do
+  test "tool_specs advertises the linear_graphql input contract for linear workflows" do
     assert [
              %{
                "description" => description,
@@ -20,6 +20,34 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            ] = DynamicTool.tool_specs()
 
     assert description =~ "Linear"
+  end
+
+  test "tool_specs advertises the notion_api input contract for notion workflows" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_endpoint: nil,
+      tracker_api_token: "notion-token",
+      tracker_project_slug: nil,
+      tracker_data_source_id: "source-123"
+    )
+
+    assert [
+             %{
+               "description" => description,
+               "inputSchema" => %{
+                 "properties" => %{
+                   "body" => _,
+                   "method" => _,
+                   "path" => _
+                 },
+                 "required" => ["path"],
+                 "type" => "object"
+               },
+               "name" => "notion_api"
+             }
+           ] = DynamicTool.tool_specs()
+
+    assert description =~ "Notion"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -130,6 +158,19 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
                "message" => "`linear_graphql` requires a non-empty `query` string."
+             }
+           }
+  end
+
+  test "unsupported tools reflect the notion tool list for notion workflows" do
+    response = DynamicTool.execute("not_a_real_tool", %{}, tracker_kind: "notion")
+
+    assert response["success"] == false
+
+    assert Jason.decode!(response["output"]) == %{
+             "error" => %{
+               "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
+               "supportedTools" => ["notion_api"]
              }
            }
   end
@@ -306,5 +347,200 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert response["success"] == true
     assert response["output"] == ":ok"
+  end
+
+  test "notion_api returns successful REST responses as tool text" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "notion_api",
+        %{
+          "method" => "POST",
+          "path" => "/comments",
+          "body" => %{"parent" => %{"page_id" => "page-1"}}
+        },
+        tracker_kind: "notion",
+        notion_request: fn method, path, body, opts ->
+          send(test_pid, {:notion_request_called, method, path, body, opts})
+          {:ok, %{status: 200, body: %{"id" => "comment-1"}}}
+        end
+      )
+
+    assert_received {:notion_request_called, :post, "/comments", %{"parent" => %{"page_id" => "page-1"}}, []}
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"id" => "comment-1"}
+  end
+
+  test "notion_api accepts a raw path string as a GET request" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "notion_api",
+        " /comments?block_id=page-1 ",
+        tracker_kind: "notion",
+        notion_request: fn method, path, body, opts ->
+          send(test_pid, {:notion_request_called, method, path, body, opts})
+          {:ok, %{status: 200, body: %{"results" => []}}}
+        end
+      )
+
+    assert_received {:notion_request_called, :get, "/comments?block_id=page-1", nil, []}
+    assert response["success"] == true
+  end
+
+  test "notion_api strips an optional /v1 prefix from paths" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "notion_api",
+        %{"path" => "/v1/pages/page-1"},
+        tracker_kind: "notion",
+        notion_request: fn method, path, body, opts ->
+          send(test_pid, {:notion_request_called, method, path, body, opts})
+          {:ok, %{status: 200, body: %{"id" => "page-1"}}}
+        end
+      )
+
+    assert_received {:notion_request_called, :get, "/pages/page-1", nil, []}
+    assert response["success"] == true
+  end
+
+  test "notion_api validates arguments before calling Notion" do
+    missing_path =
+      DynamicTool.execute(
+        "notion_api",
+        %{"method" => "GET"},
+        tracker_kind: "notion",
+        notion_request: fn _method, _path, _body, _opts ->
+          flunk("notion request should not be called when the path is missing")
+        end
+      )
+
+    assert Jason.decode!(missing_path["output"]) == %{
+             "error" => %{
+               "message" => "`notion_api` requires a non-empty `path` string."
+             }
+           }
+
+    invalid_method =
+      DynamicTool.execute(
+        "notion_api",
+        %{"path" => "/pages/page-1", "method" => "PUT"},
+        tracker_kind: "notion",
+        notion_request: fn _method, _path, _body, _opts ->
+          flunk("notion request should not be called when the method is invalid")
+        end
+      )
+
+    assert Jason.decode!(invalid_method["output"]) == %{
+             "error" => %{
+               "message" => "`notion_api.method` must be one of GET, POST, PATCH, or DELETE."
+             }
+           }
+
+    invalid_path =
+      DynamicTool.execute(
+        "notion_api",
+        %{"path" => "https://api.notion.com/v1/pages/page-1"},
+        tracker_kind: "notion",
+        notion_request: fn _method, _path, _body, _opts ->
+          flunk("notion request should not be called when the path is a full URL")
+        end
+      )
+
+    assert Jason.decode!(invalid_path["output"]) == %{
+             "error" => %{
+               "message" => "`notion_api.path` must be a relative Notion API path such as `/pages/<page-id>` and must not include a full URL."
+             }
+           }
+
+    invalid_body =
+      DynamicTool.execute(
+        "notion_api",
+        %{"path" => "/pages/page-1", "method" => "PATCH", "body" => ["bad"]},
+        tracker_kind: "notion",
+        notion_request: fn _method, _path, _body, _opts ->
+          flunk("notion request should not be called when the body is invalid")
+        end
+      )
+
+    assert Jason.decode!(invalid_body["output"]) == %{
+             "error" => %{
+               "message" => "`notion_api.body` must be a JSON object when provided."
+             }
+           }
+
+    body_not_allowed =
+      DynamicTool.execute(
+        "notion_api",
+        %{"path" => "/pages/page-1", "method" => "GET", "body" => %{"foo" => "bar"}},
+        tracker_kind: "notion",
+        notion_request: fn _method, _path, _body, _opts ->
+          flunk("notion request should not be called when the body is not allowed")
+        end
+      )
+
+    assert Jason.decode!(body_not_allowed["output"]) == %{
+             "error" => %{
+               "message" => "`notion_api.body` is only allowed for POST and PATCH requests.",
+               "method" => "GET"
+             }
+           }
+  end
+
+  test "notion_api formats auth and transport failures" do
+    missing_token =
+      DynamicTool.execute(
+        "notion_api",
+        %{"path" => "/pages/page-1"},
+        tracker_kind: "notion",
+        notion_request: fn _method, _path, _body, _opts -> {:error, :missing_notion_api_token} end
+      )
+
+    assert Jason.decode!(missing_token["output"]) == %{
+             "error" => %{
+               "message" => "Symphony is missing Notion auth. Set `tracker.api_key` in `WORKFLOW.md` or export `NOTION_API_KEY`."
+             }
+           }
+
+    request_error =
+      DynamicTool.execute(
+        "notion_api",
+        %{"path" => "/pages/page-1"},
+        tracker_kind: "notion",
+        notion_request: fn _method, _path, _body, _opts -> {:error, {:notion_api_request, :timeout}} end
+      )
+
+    assert Jason.decode!(request_error["output"]) == %{
+             "error" => %{
+               "message" => "Notion API request failed before receiving a successful response.",
+               "reason" => ":timeout"
+             }
+           }
+  end
+
+  test "notion_api marks non-success HTTP responses as failures while preserving the body" do
+    response =
+      DynamicTool.execute(
+        "notion_api",
+        %{"path" => "/pages/page-1"},
+        tracker_kind: "notion",
+        notion_request: fn _method, _path, _body, _opts ->
+          {:ok, %{status: 403, body: %{"message" => "forbidden"}}}
+        end
+      )
+
+    assert response["success"] == false
+
+    assert Jason.decode!(response["output"]) == %{
+             "error" => %{
+               "body" => %{"message" => "forbidden"},
+               "message" => "Notion API request failed with HTTP 403.",
+               "status" => 403
+             }
+           }
   end
 end
