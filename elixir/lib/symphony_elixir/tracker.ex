@@ -41,6 +41,7 @@ defmodule SymphonyElixir.Tracker do
     case Config.settings!().tracker.kind do
       "memory" -> SymphonyElixir.Tracker.Memory
       "notion" -> SymphonyElixir.Notion.Adapter
+      "plane" -> SymphonyElixir.Plane.Adapter
       _ -> SymphonyElixir.Linear.Adapter
     end
   end

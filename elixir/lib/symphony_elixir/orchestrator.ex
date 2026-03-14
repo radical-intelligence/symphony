@@ -249,6 +249,18 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Notion assignee_property missing in WORKFLOW.md while tracker.assignee is configured")
         state
 
+      {:error, :missing_plane_api_token} ->
+        Logger.error("Plane API token missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_plane_workspace_slug} ->
+        Logger.error("Plane workspace_slug missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_plane_project_id} ->
+        Logger.error("Plane project_id missing in WORKFLOW.md")
+        state
+
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
 

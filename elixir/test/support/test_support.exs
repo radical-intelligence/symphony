@@ -45,6 +45,8 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
           Application.delete_env(:symphony_elixir, :notion_client_module)
           Application.delete_env(:symphony_elixir, :notion_request_fun)
+          Application.delete_env(:symphony_elixir, :plane_client_module)
+          Application.delete_env(:symphony_elixir, :plane_request_fun)
           File.rm_rf(workflow_root)
         end)
 
@@ -98,6 +100,8 @@ defmodule SymphonyElixir.TestSupport do
           tracker_endpoint: "https://api.linear.app/graphql",
           tracker_api_token: "token",
           tracker_project_slug: "project",
+          tracker_workspace_slug: nil,
+          tracker_project_id: nil,
           tracker_data_source_id: nil,
           tracker_status_property: nil,
           tracker_title_property: nil,
@@ -143,6 +147,8 @@ defmodule SymphonyElixir.TestSupport do
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
+    tracker_workspace_slug = Keyword.get(config, :tracker_workspace_slug)
+    tracker_project_id = Keyword.get(config, :tracker_project_id)
     tracker_data_source_id = Keyword.get(config, :tracker_data_source_id)
     tracker_status_property = Keyword.get(config, :tracker_status_property)
     tracker_title_property = Keyword.get(config, :tracker_title_property)
@@ -189,6 +195,8 @@ defmodule SymphonyElixir.TestSupport do
         "  endpoint: #{yaml_value(tracker_endpoint)}",
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
+        "  workspace_slug: #{yaml_value(tracker_workspace_slug)}",
+        "  project_id: #{yaml_value(tracker_project_id)}",
         "  data_source_id: #{yaml_value(tracker_data_source_id)}",
         "  status_property: #{yaml_value(tracker_status_property)}",
         "  title_property: #{yaml_value(tracker_title_property)}",

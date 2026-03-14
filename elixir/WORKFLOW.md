@@ -1,6 +1,6 @@
 ---
 tracker:
-  kind: linear # Reference workflow uses Linear; runtime also supports notion
+  kind: linear # Reference workflow uses Linear; runtime also supports notion and plane
   project_slug: "symphony-0c79b11b75ea"
   # For notion workflows, replace project_slug with:
   # data_source_id: "<notion-data-source-id>"
@@ -13,6 +13,10 @@ tracker:
   # description_property: "Description"
   # labels_property: "Labels"
   # priority_property: "Priority"
+  # For plane workflows, replace project_slug with:
+  # workspace_slug: "<plane-workspace-slug>"
+  # project_id: "<plane-project-id>"
+  # assignee: $PLANE_ASSIGNEE
   active_states:
     - Todo
     - In Progress

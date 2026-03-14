@@ -49,6 +49,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:endpoint, :string)
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:workspace_slug, :string)
+      field(:project_id, :string)
       field(:data_source_id, :string)
       field(:status_property, :string)
       field(:title_property, :string)
@@ -72,6 +74,8 @@ defmodule SymphonyElixir.Config.Schema do
           :endpoint,
           :api_key,
           :project_slug,
+          :workspace_slug,
+          :project_id,
           :data_source_id,
           :status_property,
           :title_property,
@@ -400,6 +404,8 @@ defmodule SymphonyElixir.Config.Schema do
             settings.tracker.api_key,
             System.get_env(default_tracker_api_key_env(tracker_kind))
           ),
+        workspace_slug: resolve_optional_env_setting(settings.tracker.workspace_slug),
+        project_id: resolve_optional_env_setting(settings.tracker.project_id),
         data_source_id: resolve_optional_env_setting(settings.tracker.data_source_id),
         assignee:
           resolve_secret_setting(
@@ -430,12 +436,15 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp default_tracker_endpoint("notion"), do: "https://api.notion.com/v1"
+  defp default_tracker_endpoint("plane"), do: "https://api.plane.so"
   defp default_tracker_endpoint(_tracker_kind), do: "https://api.linear.app/graphql"
 
   defp default_tracker_api_key_env("notion"), do: "NOTION_API_KEY"
+  defp default_tracker_api_key_env("plane"), do: "PLANE_API_KEY"
   defp default_tracker_api_key_env(_tracker_kind), do: "LINEAR_API_KEY"
 
   defp default_tracker_assignee_env("notion"), do: "NOTION_ASSIGNEE"
+  defp default_tracker_assignee_env("plane"), do: "PLANE_ASSIGNEE"
   defp default_tracker_assignee_env(_tracker_kind), do: "LINEAR_ASSIGNEE"
 
   defp normalize_keys(value) when is_map(value) do
