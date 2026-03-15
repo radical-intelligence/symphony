@@ -179,31 +179,20 @@ defmodule SymphonyElixir.Plane.Client do
   defp list_work_items_by_state_ids(context, state_ids, opts) when is_map(context) and is_list(state_ids) do
     assignee = Keyword.get(opts, :assignee, context.assignee)
 
-    Enum.reduce_while(state_ids, {:ok, []}, fn state_id, {:ok, acc_work_items} ->
-      case list_work_items_by_state_id(context, state_id, assignee) do
-        {:ok, work_items} ->
-          {:cont, {:ok, acc_work_items ++ work_items}}
-
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, work_items} -> {:ok, dedupe_work_items_by_id(work_items)}
-      {:error, reason} -> {:error, reason}
+    with {:ok, work_items} <- list_work_items(context, assignee) do
+      {:ok, filter_work_items_by_state_ids(work_items, state_ids)}
     end
   end
 
-  defp list_work_items_by_state_id(context, state_id, assignee) do
-    do_list_work_items_by_state_id(context, state_id, assignee, nil, [])
+  defp list_work_items(context, assignee) do
+    do_list_work_items(context, assignee, nil, [])
   end
 
-  defp do_list_work_items_by_state_id(context, state_id, assignee, cursor, acc_work_items) do
+  defp do_list_work_items(context, assignee, cursor, acc_work_items) do
     query =
       %{
         "expand" => @expand_fields,
-        "per_page" => @query_page_size,
-        "state" => state_id
+        "per_page" => @query_page_size
       }
       |> maybe_put_query_value("assignee", assignee)
       |> maybe_put_query_value("cursor", cursor)
@@ -219,7 +208,7 @@ defmodule SymphonyElixir.Plane.Client do
       updated_acc = acc_work_items ++ Enum.filter(work_items, &is_map/1)
 
       if response["next_page_results"] == true and is_binary(response["next_cursor"]) and response["next_cursor"] != "" do
-        do_list_work_items_by_state_id(context, state_id, assignee, response["next_cursor"], updated_acc)
+        do_list_work_items(context, assignee, response["next_cursor"], updated_acc)
       else
         {:ok, updated_acc}
       end
@@ -462,6 +451,30 @@ defmodule SymphonyElixir.Plane.Client do
   end
 
   defp normalize_optional_string(_value), do: nil
+
+  defp filter_work_items_by_state_ids(work_items, state_ids)
+       when is_list(work_items) and is_list(state_ids) do
+    allowed_state_ids =
+      state_ids
+      |> Enum.filter(&is_binary/1)
+      |> MapSet.new()
+
+    work_items
+    |> Enum.filter(&work_item_state_allowed?(&1, allowed_state_ids))
+    |> dedupe_work_items_by_id()
+  end
+
+  defp work_item_state_allowed?(%{"state" => %{"id" => state_id}}, allowed_state_ids)
+       when is_binary(state_id) and is_struct(allowed_state_ids, MapSet) do
+    MapSet.member?(allowed_state_ids, state_id)
+  end
+
+  defp work_item_state_allowed?(%{"state" => state_id}, allowed_state_ids)
+       when is_binary(state_id) and is_struct(allowed_state_ids, MapSet) do
+    MapSet.member?(allowed_state_ids, state_id)
+  end
+
+  defp work_item_state_allowed?(_work_item, _allowed_state_ids), do: false
 
   defp dedupe_work_items_by_id(work_items) when is_list(work_items) do
     {_seen_ids, deduped_items} =

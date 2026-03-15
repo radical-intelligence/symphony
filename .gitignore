@@ -1,0 +1,7 @@
+.env.notion.local
+.env.plane.local
+.DS_Store
+.live-e2e-home/
+.tmp/
+docker/symphony_ssh_config.local
+docker/run-battlestars-plane-host-worker.sh

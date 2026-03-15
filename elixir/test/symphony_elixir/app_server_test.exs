@@ -1435,20 +1435,24 @@ defmodule SymphonyElixir.AppServerTest do
 
     previous_path = System.get_env("PATH")
     previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+    previous_gh_token = System.get_env("GH_TOKEN")
 
     on_exit(fn ->
       restore_env("PATH", previous_path)
       restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+      restore_env("GH_TOKEN", previous_gh_token)
     end)
 
     try do
       trace_file = Path.join(test_root, "ssh.trace")
       fake_ssh = Path.join(test_root, "ssh")
       remote_workspace = "/remote/workspaces/MT-REMOTE"
+      gh_token = "ghu_test_token"
 
       File.mkdir_p!(test_root)
       System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
       System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      System.put_env("GH_TOKEN", gh_token)
 
       File.write!(fake_ssh, """
       #!/bin/sh
@@ -1485,7 +1489,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: "/remote/workspaces",
-        codex_command: "fake-remote-codex app-server"
+        codex_command:
+          "env PATH=/opt/homebrew/bin:/usr/local/bin:$PATH GH_TOKEN=$GH_TOKEN fake-remote-codex app-server"
       )
 
       issue = %Issue{
@@ -1513,8 +1518,10 @@ defmodule SymphonyElixir.AppServerTest do
       assert argv_line =~ "-T -p 2200 worker-01 bash -lc"
       assert argv_line =~ "cd "
       assert argv_line =~ remote_workspace
+      assert argv_line =~ "export GH_TOKEN="
+      assert argv_line =~ gh_token
       assert argv_line =~ "exec "
-      assert argv_line =~ "fake-remote-codex app-server"
+      assert argv_line =~ "GH_TOKEN=$GH_TOKEN fake-remote-codex app-server"
 
       expected_turn_policy = %{
         "type" => "workspaceWrite",

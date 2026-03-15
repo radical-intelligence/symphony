@@ -46,7 +46,9 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
      set it as the `LINEAR_API_KEY` environment variable.
    - Plane: create a Plane API key and set `PLANE_API_KEY`. Also set `PLANE_WORKSPACE_SLUG` and
      `PLANE_PROJECT_ID` for the workspace/project Symphony should manage. If you want Symphony to
-     pick up only issues assigned to one Plane user, also set `PLANE_ASSIGNEE`.
+     pick up only issues assigned to one Plane user, also set `PLANE_ASSIGNEE`. The bundled Plane
+     templates also expect `PROJECT_REPO_URL`, and the host-worker helper expects
+     `SYMPHONY_WORKSPACE_ROOT`.
    - Notion: create an internal integration, share the target data source with it, and set the
      integration token as the `NOTION_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
@@ -71,6 +73,16 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
        Symphony should manage.
      - If you want Symphony to route only tasks assigned to a specific Plane user, set
        `tracker.assignee`.
+     - Set `PROJECT_REPO_URL` in the shell or local env file used by the workflow helper so
+       `hooks.after_create` can clone the repo under automation.
+     - Set `workspace.root` directly or export `SYMPHONY_WORKSPACE_ROOT` for the bundled Plane
+       templates.
+     - The bundled Plane templates assume the review-loop states `Todo`, `In Progress`,
+       `Human Review`, `Merging`, `Rework`, `Done`, and `Cancelled`. Either sync those states with
+       `./docker/sync-plane-states.sh --with-review-loop` or customize the workflow state names to
+       match your project.
+     - Keep repo/project-specific values in local env files or copied local workflow files rather
+       than editing the committed Plane templates in this repo.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
@@ -207,9 +219,24 @@ Reference Notion workflow templates in this repo:
 - `./WORKFLOW.notion.smoke.md`: low-risk local smoke test that proves polling, workspace bootstrap,
   tool access, and comment round-tripping
 
-Reference Plane workflow template in this repo:
+Reference Plane workflow templates in this repo:
 
-- `./WORKFLOW.plane.md`: fuller end-to-end Plane workflow using `plane_api`
+- `./WORKFLOW.plane.md`: generic Plane reference workflow using a single editable Plane workpad
+  comment, review-loop states, `plane_api`, direct external-source verification, and durable
+  artifact gates
+- `./WORKFLOW.plane.host-worker.md`: the same Plane reference workflow plus Docker-orchestrator to
+  SSH-worker wiring, dashboard config, and GitHub token passthrough for unattended PR creation
+
+Bundled Plane workflow conventions:
+
+- exactly one persistent Plane workpad comment (`## Codex Workpad`) per work item
+- review-loop states with `Human Review`, `Merging`, and `Rework`
+- required direct retrieval of cited external sources or a non-terminal blocker
+- repository-changing tasks must have a pushed branch and PR before `Human Review` or `Done`
+- durable research/review output must live in a Plane page/wiki or in the workpad itself
+- repo/project-specific values belong in local-only files such as `.env.plane.local`,
+  `docker/symphony_ssh_config.local`, or copied local workflow files, not in the committed
+  Symphony templates
 
 Notes:
 
@@ -254,6 +281,8 @@ Notes:
   auth. The tool accepts a relative REST path plus optional HTTP method and JSON body.
 - Prompt templates also receive a non-secret `tracker` object, which is useful for Plane REST paths
   such as `{{ tracker.workspace_slug }}` and `{{ tracker.project_id }}`.
+- The bundled Plane workflow templates use a single editable workpad comment in Plane rather than
+  append-only progress comments, and they expect the review-loop state machine documented above.
 - The bundled Notion workflow template uses append-only page comments for progress/handoff notes
   rather than trying to edit a single persistent comment in place.
 - For path values, `~` is expanded to the home directory.
@@ -301,8 +330,8 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
-Run the real external end-to-end test only when you want Symphony to create disposable Linear
-resources and launch a real `codex app-server` session:
+Run the real external Linear end-to-end test only when you want Symphony to create disposable
+Linear resources and launch a real `codex app-server` session:
 
 ```bash
 cd elixir
@@ -331,8 +360,116 @@ The live test creates a temporary Linear project and issue, writes a temporary `
 a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
 Linear issue, then marks the project completed so the run remains visible in Linear.
 
-The live end-to-end path is currently Linear-only. Notion and Plane tracker coverage is exercised
-via the unit and integration-style tests under `test/symphony_elixir/notion_client_test.exs` and
+Run the real external Plane end-to-end test only when you want Symphony to create a disposable
+Plane project and work item and launch a real `codex app-server` session:
+
+```bash
+cd elixir
+export PLANE_API_KEY=...
+export PLANE_WORKSPACE_SLUG=...
+make e2e-plane
+```
+
+If you want the same local-file workflow we use for Notion helpers, copy the example env file at
+the repo root and use the helper script instead:
+
+```bash
+cp .env.plane.local.example .env.plane.local
+./docker/run-plane-live-e2e.sh
+```
+
+The helper script sources `.env.plane.local` if present, validates the required Plane variables,
+then runs `make e2e-plane` via `mise` when available, plain `make` otherwise, and falls back to
+Docker when neither host runtime is installed.
+
+The Docker fallback mounts the repo into a purpose-built runner image, launches the real
+`codex app-server` inside that container, and mounts the host Docker socket so the SSH scenario can
+still bring up the disposable worker containers. Because the test process itself is containerized in
+that mode, the helper runs the SSH-worker scenario only; use a host Elixir runtime if you want the
+local-worker scenario as well.
+
+Optional environment variables:
+
+- `SYMPHONY_LIVE_PLANE_ENDPOINT` overrides the default `https://api.plane.so` API base, which is
+  useful for self-hosted Plane instances
+- `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
+
+`make e2e-plane` runs two live scenarios:
+- one with a local worker
+- one with SSH workers
+
+If `SYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two
+disposable SSH workers on `localhost:<port>` using the same transport setup as the Linear live
+test.
+
+The Plane live test creates a temporary project inside `PLANE_WORKSPACE_SLUG`, writes a temporary
+`WORKFLOW.md`, runs a real agent turn, verifies the workspace side effect, requires Codex to
+comment on and complete the Plane work item, then deletes the temporary project in cleanup.
+
+To run Symphony against a real Plane project from Docker with an SSH worker on the host, keep the
+project-specific values in local-only files and use the generic helper:
+
+```bash
+cp .env.plane.local.example .env.plane.local
+cp docker/symphony_ssh_config.example docker/symphony_ssh_config.local
+./docker/run-symphony-plane-host-worker.sh
+```
+
+By default the helper runs `./WORKFLOW.plane.host-worker.md`, sources `.env.plane.local` if it
+exists, mounts `docker/symphony_ssh_config.local` into the container, and expects at least:
+
+- `PLANE_API_KEY`
+- `PLANE_WORKSPACE_SLUG`
+- `PLANE_PROJECT_ID`
+- `PROJECT_REPO_URL`
+- `SYMPHONY_WORKSPACE_ROOT`
+
+Optional variables for that helper:
+
+- `PLANE_ASSIGNEE`
+- `GH_TOKEN` or `GITHUB_TOKEN`
+- `SYMPHONY_SSH_KEY_PATH`
+- `SYMPHONY_SSH_CONFIG_PATH`
+- `SYMPHONY_CONTAINER_NAME`
+
+The committed helper and templates are generic. Keep concrete project IDs, repo URLs, workspace
+paths, SSH usernames, and similar local details in `.env.plane.local`,
+`docker/symphony_ssh_config.local`, or a copied local workflow file.
+
+To sync a Plane project's workflow states to a Symphony-friendly setup, use:
+
+```bash
+./docker/sync-plane-states.sh
+```
+
+By default this ensures the minimal state set:
+
+- `Backlog`
+- `Todo`
+- `In Progress`
+- `Done`
+- `Cancelled`
+
+It also prints optional review-loop recommendations for `Human Review`, `Merging`, and `Rework`.
+To create those optional states too, run:
+
+```bash
+./docker/sync-plane-states.sh --with-review-loop
+```
+
+Use `--with-review-loop` for the bundled `WORKFLOW.plane.md` and
+`WORKFLOW.plane.host-worker.md` templates, since both assume the full review-loop state machine.
+
+Use `--dry-run` to print recommendations without changing Plane:
+
+```bash
+./docker/sync-plane-states.sh --dry-run
+```
+
+The sync helper prefers local `mise`/`mix` when available and falls back to Docker otherwise.
+
+Notion tracker coverage remains in the unit and integration-style tests under
+`test/symphony_elixir/notion_client_test.exs`. Plane also retains its adapter-level coverage under
 `test/symphony_elixir/plane_client_test.exs`.
 
 ## FAQ

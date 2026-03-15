@@ -17,7 +17,7 @@ defmodule SymphonyElixir.PlaneClientTest do
     :ok
   end
 
-  test "fetch_candidate_issues queries plane project metadata and normalizes work items" do
+  test "fetch_candidate_issues filters unexpected Plane results by active state and normalizes work items" do
     Application.put_env(:symphony_elixir, :plane_request_fun, &fake_request/5)
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -34,7 +34,15 @@ defmodule SymphonyElixir.PlaneClientTest do
     Process.put(:plane_responses, [
       {:ok, %{status: 200, body: plane_project_body()}},
       {:ok, %{status: 200, body: plane_states_body()}},
-      {:ok, %{status: 200, body: plane_work_items_body("state-todo")}}
+      {:ok,
+       %{
+         status: 200,
+         body:
+           plane_work_items_body([
+             plane_work_item_body("work-item-1", 42, "state-todo"),
+             plane_work_item_body("work-item-2", 43, "state-backlog")
+           ])
+       }}
     ])
 
     assert {:ok, [issue]} = Client.fetch_candidate_issues()
@@ -56,16 +64,15 @@ defmodule SymphonyElixir.PlaneClientTest do
     assert issue.created_at == expected_created_at
     assert issue.updated_at == expected_updated_at
 
-    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1", _headers, nil, nil}
-    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/states", _headers, nil, nil}
+    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/", _headers, nil, nil}
+    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/states/", _headers, nil, nil}
 
-    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/work-items", _headers, query, nil}
+    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/work-items/", _headers, query, nil}
 
     assert query == %{
              "assignee" => "user-1",
              "expand" => "assignees,labels,state,project",
-             "per_page" => 100,
-             "state" => "state-todo"
+             "per_page" => 100
            }
   end
 
@@ -115,14 +122,14 @@ defmodule SymphonyElixir.PlaneClientTest do
 
     assert :ok = Client.create_comment("work-item-1", "Looks <good>\nnow")
 
-    assert_received {:plane_request, :post, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/work-items/work-item-1/comments", _headers, nil, comment_body}
+    assert_received {:plane_request, :post, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/work-items/work-item-1/comments/", _headers, nil, comment_body}
     assert comment_body == %{"comment_html" => "<p>Looks &lt;good&gt;<br>now</p>"}
 
     assert :ok = Client.update_issue_state("work-item-1", "Done")
 
-    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1", _headers, nil, nil}
-    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/states", _headers, nil, nil}
-    assert_received {:plane_request, :patch, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/work-items/work-item-1", _headers, nil, patch_body}
+    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/", _headers, nil, nil}
+    assert_received {:plane_request, :get, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/states/", _headers, nil, nil}
+    assert_received {:plane_request, :patch, "https://api.plane.so/api/v1/workspaces/workspace-1/projects/project-1/work-items/work-item-1/", _headers, nil, patch_body}
     assert patch_body == %{"state" => "state-done"}
   end
 
@@ -151,14 +158,15 @@ defmodule SymphonyElixir.PlaneClientTest do
     %{
       "results" => [
         %{"id" => "state-todo", "name" => "Todo", "group" => "unstarted", "color" => "#999999"},
+        %{"id" => "state-backlog", "name" => "Backlog", "group" => "backlog", "color" => "#60646C"},
         %{"id" => "state-done", "name" => "Done", "group" => "completed", "color" => "#00ff00"}
       ]
     }
   end
 
-  defp plane_work_items_body(state_id) do
+  defp plane_work_items_body(work_items) when is_list(work_items) do
     %{
-      "results" => [plane_work_item_body("work-item-1", 42, state_id)],
+      "results" => work_items,
       "next_cursor" => "",
       "next_page_results" => false
     }

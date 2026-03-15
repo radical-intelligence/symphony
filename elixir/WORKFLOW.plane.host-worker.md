@@ -20,6 +20,10 @@ polling:
   interval_ms: 5000
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
+worker:
+  ssh_hosts:
+    - symphony-host
+  max_concurrent_agents_per_host: 1
 hooks:
   after_create: |
     : "${PROJECT_REPO_URL:?set PROJECT_REPO_URL}"
@@ -47,12 +51,15 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
+  command: env PATH=/opt/homebrew/bin:/usr/local/bin:$PATH GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}" codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
+server:
+  port: 4103
+  host: 0.0.0.0
 ---
 
 You are working on a Plane work item `{{ issue.identifier }}`.

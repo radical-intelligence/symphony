@@ -16,9 +16,16 @@ defmodule SymphonyElixir.Plane.API do
           {:ok, response()} | {:error, term()}
   def request(method, path, body \\ nil, opts \\ [])
       when method in [:delete, :get, :patch, :post, :put] and is_binary(path) do
-    tracker = Config.settings!().tracker
-    endpoint = Keyword.get(opts, :endpoint, tracker.endpoint)
-    api_key = Keyword.get(opts, :api_key, tracker.api_key)
+    endpoint =
+      Keyword.get_lazy(opts, :endpoint, fn ->
+        Config.settings!().tracker.endpoint
+      end)
+
+    api_key =
+      Keyword.get_lazy(opts, :api_key, fn ->
+        Config.settings!().tracker.api_key
+      end)
+
     query = Keyword.get(opts, :query)
     url = build_url(endpoint, path)
 
@@ -127,7 +134,23 @@ defmodule SymphonyElixir.Plane.API do
           true -> "/" <> raw
         end
       end)
+      |> ensure_trailing_slash()
 
     normalized_endpoint <> normalized_path
+  end
+
+  defp ensure_trailing_slash("/"), do: "/"
+
+  defp ensure_trailing_slash(path) when is_binary(path) do
+    case Regex.run(~r/^([^?#]*)(.*)$/, path, capture: :all_but_first) do
+      [path_only, suffix] when path_only != "" ->
+        normalized_path =
+          if String.ends_with?(path_only, "/"), do: path_only, else: path_only <> "/"
+
+        normalized_path <> suffix
+
+      _ ->
+        path
+    end
   end
 end

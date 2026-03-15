@@ -1,9 +1,9 @@
-.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e
+.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e e2e-plane
 
 MIX ?= mix
 
 help:
-	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, coverage, dialyzer, e2e, ci"
+	@echo "Targets: setup, deps, fmt, fmt-check, lint, test, coverage, dialyzer, e2e, e2e-plane, ci"
 
 setup:
 	$(MIX) setup
@@ -35,6 +35,9 @@ dialyzer:
 
 e2e:
 	SYMPHONY_RUN_LIVE_E2E=1 $(MIX) test test/symphony_elixir/live_e2e_test.exs
+
+e2e-plane:
+	SYMPHONY_RUN_LIVE_PLANE_E2E=1 $(MIX) test test/symphony_elixir/live_plane_e2e_test.exs
 
 ci:
 	$(MAKE) setup
