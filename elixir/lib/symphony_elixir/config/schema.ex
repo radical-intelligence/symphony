@@ -46,10 +46,20 @@ defmodule SymphonyElixir.Config.Schema do
 
     embedded_schema do
       field(:kind, :string)
-      field(:endpoint, :string, default: "https://api.linear.app/graphql")
+      field(:endpoint, :string)
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:workspace_slug, :string)
+      field(:project_id, :string)
+      field(:data_source_id, :string)
+      field(:status_property, :string)
+      field(:title_property, :string)
+      field(:identifier_property, :string)
+      field(:description_property, :string)
+      field(:labels_property, :string)
+      field(:priority_property, :string)
       field(:assignee, :string)
+      field(:assignee_property, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
@@ -59,7 +69,25 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :workspace_slug,
+          :project_id,
+          :data_source_id,
+          :status_property,
+          :title_property,
+          :identifier_property,
+          :description_property,
+          :labels_property,
+          :priority_property,
+          :assignee,
+          :assignee_property,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
     end
@@ -366,10 +394,24 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp finalize_settings(settings) do
+    tracker_kind = settings.tracker.kind
+
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+      | endpoint: normalize_tracker_endpoint(settings.tracker.endpoint, tracker_kind),
+        api_key:
+          resolve_secret_setting(
+            settings.tracker.api_key,
+            System.get_env(default_tracker_api_key_env(tracker_kind))
+          ),
+        workspace_slug: resolve_optional_env_setting(settings.tracker.workspace_slug),
+        project_id: resolve_optional_env_setting(settings.tracker.project_id),
+        data_source_id: resolve_optional_env_setting(settings.tracker.data_source_id),
+        assignee:
+          resolve_secret_setting(
+            settings.tracker.assignee,
+            System.get_env(default_tracker_assignee_env(tracker_kind))
+          )
     }
 
     workspace = %{
@@ -385,6 +427,25 @@ defmodule SymphonyElixir.Config.Schema do
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
   end
+
+  defp normalize_tracker_endpoint(endpoint, tracker_kind) do
+    case normalize_secret_value(endpoint) do
+      nil -> default_tracker_endpoint(tracker_kind)
+      normalized -> normalized
+    end
+  end
+
+  defp default_tracker_endpoint("notion"), do: "https://api.notion.com/v1"
+  defp default_tracker_endpoint("plane"), do: "https://api.plane.so"
+  defp default_tracker_endpoint(_tracker_kind), do: "https://api.linear.app/graphql"
+
+  defp default_tracker_api_key_env("notion"), do: "NOTION_API_KEY"
+  defp default_tracker_api_key_env("plane"), do: "PLANE_API_KEY"
+  defp default_tracker_api_key_env(_tracker_kind), do: "LINEAR_API_KEY"
+
+  defp default_tracker_assignee_env("notion"), do: "NOTION_ASSIGNEE"
+  defp default_tracker_assignee_env("plane"), do: "PLANE_ASSIGNEE"
+  defp default_tracker_assignee_env(_tracker_kind), do: "LINEAR_ASSIGNEE"
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
@@ -447,6 +508,12 @@ defmodule SymphonyElixir.Config.Schema do
       :error ->
         value
     end
+  end
+
+  defp resolve_optional_env_setting(nil), do: nil
+
+  defp resolve_optional_env_setting(value) when is_binary(value) do
+    resolve_env_value(value, nil)
   end
 
   defp normalize_path_token(value) when is_binary(value) do

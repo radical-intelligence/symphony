@@ -43,6 +43,10 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+          Application.delete_env(:symphony_elixir, :notion_client_module)
+          Application.delete_env(:symphony_elixir, :notion_request_fun)
+          Application.delete_env(:symphony_elixir, :plane_client_module)
+          Application.delete_env(:symphony_elixir, :plane_request_fun)
           File.rm_rf(workflow_root)
         end)
 
@@ -96,7 +100,17 @@ defmodule SymphonyElixir.TestSupport do
           tracker_endpoint: "https://api.linear.app/graphql",
           tracker_api_token: "token",
           tracker_project_slug: "project",
+          tracker_workspace_slug: nil,
+          tracker_project_id: nil,
+          tracker_data_source_id: nil,
+          tracker_status_property: nil,
+          tracker_title_property: nil,
+          tracker_identifier_property: nil,
+          tracker_description_property: nil,
+          tracker_labels_property: nil,
+          tracker_priority_property: nil,
           tracker_assignee: nil,
+          tracker_assignee_property: nil,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
@@ -133,7 +147,17 @@ defmodule SymphonyElixir.TestSupport do
     tracker_endpoint = Keyword.get(config, :tracker_endpoint)
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
+    tracker_workspace_slug = Keyword.get(config, :tracker_workspace_slug)
+    tracker_project_id = Keyword.get(config, :tracker_project_id)
+    tracker_data_source_id = Keyword.get(config, :tracker_data_source_id)
+    tracker_status_property = Keyword.get(config, :tracker_status_property)
+    tracker_title_property = Keyword.get(config, :tracker_title_property)
+    tracker_identifier_property = Keyword.get(config, :tracker_identifier_property)
+    tracker_description_property = Keyword.get(config, :tracker_description_property)
+    tracker_labels_property = Keyword.get(config, :tracker_labels_property)
+    tracker_priority_property = Keyword.get(config, :tracker_priority_property)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
+    tracker_assignee_property = Keyword.get(config, :tracker_assignee_property)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
@@ -171,7 +195,17 @@ defmodule SymphonyElixir.TestSupport do
         "  endpoint: #{yaml_value(tracker_endpoint)}",
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
+        "  workspace_slug: #{yaml_value(tracker_workspace_slug)}",
+        "  project_id: #{yaml_value(tracker_project_id)}",
+        "  data_source_id: #{yaml_value(tracker_data_source_id)}",
+        "  status_property: #{yaml_value(tracker_status_property)}",
+        "  title_property: #{yaml_value(tracker_title_property)}",
+        "  identifier_property: #{yaml_value(tracker_identifier_property)}",
+        "  description_property: #{yaml_value(tracker_description_property)}",
+        "  labels_property: #{yaml_value(tracker_labels_property)}",
+        "  priority_property: #{yaml_value(tracker_priority_property)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
+        "  assignee_property: #{yaml_value(tracker_assignee_property)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "polling:",

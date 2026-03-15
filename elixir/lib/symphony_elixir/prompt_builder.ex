@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.PromptBuilder do
   @moduledoc """
-  Builds agent prompts from Linear issue data.
+  Builds agent prompts from normalized tracker issue data.
   """
 
   alias SymphonyElixir.{Config, Workflow}
@@ -18,7 +18,8 @@ defmodule SymphonyElixir.PromptBuilder do
     |> Solid.render!(
       %{
         "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
+        "issue" => issue |> Map.from_struct() |> to_solid_map(),
+        "tracker" => tracker_prompt_context()
       },
       @render_opts
     )
@@ -53,6 +54,13 @@ defmodule SymphonyElixir.PromptBuilder do
   defp to_solid_value(value) when is_map(value), do: to_solid_map(value)
   defp to_solid_value(value) when is_list(value), do: Enum.map(value, &to_solid_value/1)
   defp to_solid_value(value), do: value
+
+  defp tracker_prompt_context do
+    Config.settings!().tracker
+    |> Map.from_struct()
+    |> Map.drop([:api_key])
+    |> to_solid_map()
+  end
 
   defp default_prompt(prompt) when is_binary(prompt) do
     if String.trim(prompt) == "" do

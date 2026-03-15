@@ -3,7 +3,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.Notion.API, as: NotionAPI
+  alias SymphonyElixir.Plane.API, as: PlaneAPI
 
   @linear_graphql_tool "linear_graphql"
   @linear_graphql_description """
@@ -25,32 +28,117 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   }
+  @notion_api_tool "notion_api"
+  @notion_api_description """
+  Execute a raw Notion REST API request against Symphony's configured Notion workspace auth.
+  """
+  @notion_api_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["path"],
+    "properties" => %{
+      "path" => %{
+        "type" => "string",
+        "description" => "Relative Notion API path beginning with `/`, for example `/pages/<page-id>` or `/comments?block_id=<page-id>`."
+      },
+      "method" => %{
+        "type" => "string",
+        "description" => "Optional HTTP method. Supported values: GET, POST, PATCH, DELETE.",
+        "enum" => ["GET", "POST", "PATCH", "DELETE"]
+      },
+      "body" => %{
+        "type" => ["object", "null"],
+        "description" => "Optional JSON request body for POST and PATCH requests.",
+        "additionalProperties" => true
+      }
+    }
+  }
+  @plane_api_tool "plane_api"
+  @plane_api_description """
+  Execute a raw Plane REST API request against Symphony's configured Plane workspace auth.
+  """
+  @plane_api_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => ["path"],
+    "properties" => %{
+      "path" => %{
+        "type" => "string",
+        "description" => "Relative Plane API path beginning with `/`, for example `/workspaces/<workspace>/projects/<project>/work-items/<id>`."
+      },
+      "method" => %{
+        "type" => "string",
+        "description" => "Optional HTTP method. Supported values: GET, POST, PATCH, PUT, DELETE.",
+        "enum" => ["GET", "POST", "PATCH", "PUT", "DELETE"]
+      },
+      "query" => %{
+        "type" => ["object", "null"],
+        "description" => "Optional query parameter object.",
+        "additionalProperties" => true
+      },
+      "body" => %{
+        "type" => ["object", "null"],
+        "description" => "Optional JSON request body for POST, PATCH, and PUT requests.",
+        "additionalProperties" => true
+      }
+    }
+  }
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
-    case tool do
-      @linear_graphql_tool ->
+    case {tool, current_tracker_kind(opts)} do
+      {@linear_graphql_tool, "linear"} ->
         execute_linear_graphql(arguments, opts)
 
-      other ->
+      {@notion_api_tool, "notion"} ->
+        execute_notion_api(arguments, opts)
+
+      {@plane_api_tool, "plane"} ->
+        execute_plane_api(arguments, opts)
+
+      {other, _tracker_kind} ->
         failure_response(%{
           "error" => %{
             "message" => "Unsupported dynamic tool: #{inspect(other)}.",
-            "supportedTools" => supported_tool_names()
+            "supportedTools" => supported_tool_names(opts)
           }
         })
     end
   end
 
-  @spec tool_specs() :: [map()]
-  def tool_specs do
-    [
-      %{
-        "name" => @linear_graphql_tool,
-        "description" => @linear_graphql_description,
-        "inputSchema" => @linear_graphql_input_schema
-      }
-    ]
+  @spec tool_specs(keyword()) :: [map()]
+  def tool_specs(opts \\ []) do
+    case current_tracker_kind(opts) do
+      "linear" ->
+        [
+          %{
+            "name" => @linear_graphql_tool,
+            "description" => @linear_graphql_description,
+            "inputSchema" => @linear_graphql_input_schema
+          }
+        ]
+
+      "notion" ->
+        [
+          %{
+            "name" => @notion_api_tool,
+            "description" => @notion_api_description,
+            "inputSchema" => @notion_api_input_schema
+          }
+        ]
+
+      "plane" ->
+        [
+          %{
+            "name" => @plane_api_tool,
+            "description" => @plane_api_description,
+            "inputSchema" => @plane_api_input_schema
+          }
+        ]
+
+      _ ->
+        []
+    end
   end
 
   defp execute_linear_graphql(arguments, opts) do
@@ -61,7 +149,34 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       graphql_response(response)
     else
       {:error, reason} ->
-        failure_response(tool_error_payload(reason))
+        failure_response(tool_error_payload({:linear_tool_failure, reason}))
+    end
+  end
+
+  defp execute_notion_api(arguments, opts) do
+    notion_request = Keyword.get(opts, :notion_request, &NotionAPI.request/4)
+
+    with {:ok, method, path, body} <- normalize_notion_api_arguments(arguments),
+         {:ok, response} <- notion_request.(method, path, body, []) do
+      notion_api_response(response)
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload({:notion_tool_failure, reason}))
+    end
+  end
+
+  defp execute_plane_api(arguments, opts) do
+    plane_request =
+      Keyword.get(opts, :plane_request, fn method, path, query, body, _request_opts ->
+        PlaneAPI.request(method, path, body, query: query)
+      end)
+
+    with {:ok, method, path, query, body} <- normalize_plane_api_arguments(arguments),
+         {:ok, response} <- plane_request.(method, path, query, body, []) do
+      plane_api_response(response)
+    else
+      {:error, reason} ->
+        failure_response(tool_error_payload({:plane_tool_failure, reason}))
     end
   end
 
@@ -90,6 +205,39 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp normalize_linear_graphql_arguments(_arguments), do: {:error, :invalid_arguments}
 
+  defp normalize_notion_api_arguments(arguments) when is_binary(arguments) do
+    with {:ok, path} <- normalize_notion_path(arguments) do
+      {:ok, :get, path, nil}
+    end
+  end
+
+  defp normalize_notion_api_arguments(arguments) when is_map(arguments) do
+    with {:ok, method} <- normalize_notion_method(Map.get(arguments, "method") || Map.get(arguments, :method) || "GET"),
+         {:ok, path} <- normalize_notion_path(Map.get(arguments, "path") || Map.get(arguments, :path)),
+         {:ok, body} <- normalize_notion_body(arguments, method) do
+      {:ok, method, path, body}
+    end
+  end
+
+  defp normalize_notion_api_arguments(_arguments), do: {:error, :invalid_notion_arguments}
+
+  defp normalize_plane_api_arguments(arguments) when is_binary(arguments) do
+    with {:ok, path} <- normalize_plane_path(arguments) do
+      {:ok, :get, path, %{}, nil}
+    end
+  end
+
+  defp normalize_plane_api_arguments(arguments) when is_map(arguments) do
+    with {:ok, method} <- normalize_plane_method(Map.get(arguments, "method") || Map.get(arguments, :method) || "GET"),
+         {:ok, path} <- normalize_plane_path(Map.get(arguments, "path") || Map.get(arguments, :path)),
+         {:ok, query} <- normalize_plane_query(arguments),
+         {:ok, body} <- normalize_plane_body(arguments, method) do
+      {:ok, method, path, query, body}
+    end
+  end
+
+  defp normalize_plane_api_arguments(_arguments), do: {:error, :invalid_plane_arguments}
+
   defp normalize_query(arguments) do
     case Map.get(arguments, "query") || Map.get(arguments, :query) do
       query when is_binary(query) ->
@@ -110,6 +258,154 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
+  defp normalize_notion_method(method) when is_atom(method) do
+    normalize_notion_method(Atom.to_string(method))
+  end
+
+  defp normalize_notion_method(method) when is_binary(method) do
+    case method |> String.trim() |> String.downcase() do
+      "delete" -> {:ok, :delete}
+      "get" -> {:ok, :get}
+      "patch" -> {:ok, :patch}
+      "post" -> {:ok, :post}
+      _ -> {:error, :invalid_notion_method}
+    end
+  end
+
+  defp normalize_notion_method(_method), do: {:error, :invalid_notion_method}
+
+  defp normalize_plane_method(method) when is_atom(method) do
+    normalize_plane_method(Atom.to_string(method))
+  end
+
+  defp normalize_plane_method(method) when is_binary(method) do
+    case method |> String.trim() |> String.downcase() do
+      "delete" -> {:ok, :delete}
+      "get" -> {:ok, :get}
+      "patch" -> {:ok, :patch}
+      "post" -> {:ok, :post}
+      "put" -> {:ok, :put}
+      _ -> {:error, :invalid_plane_method}
+    end
+  end
+
+  defp normalize_plane_method(_method), do: {:error, :invalid_plane_method}
+
+  defp normalize_notion_path(path) when is_binary(path) do
+    trimmed = String.trim(path)
+
+    cond do
+      trimmed == "" ->
+        {:error, :missing_notion_path}
+
+      String.contains?(trimmed, ["\n", "\r", <<0>>]) ->
+        {:error, :invalid_notion_path}
+
+      true ->
+        case URI.parse(trimmed) do
+          %URI{scheme: nil, host: nil, fragment: nil, path: uri_path} when is_binary(uri_path) and uri_path != "" ->
+            if String.starts_with?(uri_path, "/") do
+              normalized =
+                cond do
+                  trimmed == "/v1" -> "/"
+                  String.starts_with?(trimmed, "/v1/") -> String.replace_prefix(trimmed, "/v1", "")
+                  true -> trimmed
+                end
+
+              if normalized == "/" do
+                {:error, :invalid_notion_path}
+              else
+                {:ok, normalized}
+              end
+            else
+              {:error, :invalid_notion_path}
+            end
+
+          _ ->
+            {:error, :invalid_notion_path}
+        end
+    end
+  end
+
+  defp normalize_notion_path(_path), do: {:error, :missing_notion_path}
+
+  defp normalize_plane_path(path) when is_binary(path) do
+    trimmed = String.trim(path)
+
+    cond do
+      trimmed == "" ->
+        {:error, :missing_plane_path}
+
+      String.contains?(trimmed, ["\n", "\r", <<0>>]) ->
+        {:error, :invalid_plane_path}
+
+      true ->
+        case URI.parse(trimmed) do
+          %URI{scheme: nil, host: nil, fragment: nil, path: uri_path} when is_binary(uri_path) and uri_path != "" ->
+            if String.starts_with?(uri_path, "/") do
+              normalized =
+                cond do
+                  trimmed == "/api/v1" -> "/"
+                  String.starts_with?(trimmed, "/api/v1/") -> String.replace_prefix(trimmed, "/api/v1", "")
+                  true -> trimmed
+                end
+
+              if normalized == "/" do
+                {:error, :invalid_plane_path}
+              else
+                {:ok, normalized}
+              end
+            else
+              {:error, :invalid_plane_path}
+            end
+
+          _ ->
+            {:error, :invalid_plane_path}
+        end
+    end
+  end
+
+  defp normalize_plane_path(_path), do: {:error, :missing_plane_path}
+
+  defp normalize_notion_body(arguments, method) do
+    case Map.get(arguments, "body") || Map.get(arguments, :body) do
+      nil ->
+        {:ok, nil}
+
+      body when is_map(body) and method in [:patch, :post] ->
+        {:ok, body}
+
+      body when is_map(body) ->
+        {:error, {:notion_body_not_allowed, method}}
+
+      _ ->
+        {:error, :invalid_notion_body}
+    end
+  end
+
+  defp normalize_plane_query(arguments) do
+    case Map.get(arguments, "query") || Map.get(arguments, :query) || %{} do
+      query when is_map(query) -> {:ok, query}
+      _ -> {:error, :invalid_plane_query}
+    end
+  end
+
+  defp normalize_plane_body(arguments, method) do
+    case Map.get(arguments, "body") || Map.get(arguments, :body) do
+      nil ->
+        {:ok, nil}
+
+      body when is_map(body) and method in [:patch, :post, :put] ->
+        {:ok, body}
+
+      body when is_map(body) ->
+        {:error, {:plane_body_not_allowed, method}}
+
+      _ ->
+        {:error, :invalid_plane_body}
+    end
+  end
+
   defp graphql_response(response) do
     success =
       case response do
@@ -119,6 +415,52 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       end
 
     dynamic_tool_response(success, encode_payload(response))
+  end
+
+  defp notion_api_response(%{status: status, body: body}) when is_integer(status) and status in 200..299 do
+    dynamic_tool_response(true, encode_payload(body))
+  end
+
+  defp notion_api_response(%{status: status, body: body}) when is_integer(status) do
+    failure_response(%{
+      "error" => %{
+        "message" => "Notion API request failed with HTTP #{status}.",
+        "status" => status,
+        "body" => body
+      }
+    })
+  end
+
+  defp notion_api_response(response) do
+    failure_response(%{
+      "error" => %{
+        "message" => "Notion API returned an unexpected response.",
+        "response" => response
+      }
+    })
+  end
+
+  defp plane_api_response(%{status: status, body: body}) when is_integer(status) and status in 200..299 do
+    dynamic_tool_response(true, encode_payload(body))
+  end
+
+  defp plane_api_response(%{status: status, body: body}) when is_integer(status) do
+    failure_response(%{
+      "error" => %{
+        "message" => "Plane API request failed with HTTP #{status}.",
+        "status" => status,
+        "body" => body
+      }
+    })
+  end
+
+  defp plane_api_response(response) do
+    failure_response(%{
+      "error" => %{
+        "message" => "Plane API returned an unexpected response.",
+        "response" => response
+      }
+    })
   end
 
   defp failure_response(payload) do
@@ -168,6 +510,112 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
+  defp tool_error_payload(:missing_notion_path) do
+    %{
+      "error" => %{
+        "message" => "`notion_api` requires a non-empty `path` string."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_notion_arguments) do
+    %{
+      "error" => %{
+        "message" => "`notion_api` expects either a relative Notion API path string or an object with `path` and optional `method`/`body`."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_notion_method) do
+    %{
+      "error" => %{
+        "message" => "`notion_api.method` must be one of GET, POST, PATCH, or DELETE."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_notion_path) do
+    %{
+      "error" => %{
+        "message" => "`notion_api.path` must be a relative Notion API path such as `/pages/<page-id>` and must not include a full URL."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_notion_body) do
+    %{
+      "error" => %{
+        "message" => "`notion_api.body` must be a JSON object when provided."
+      }
+    }
+  end
+
+  defp tool_error_payload(:missing_plane_path) do
+    %{
+      "error" => %{
+        "message" => "`plane_api` requires a non-empty `path` string."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_plane_arguments) do
+    %{
+      "error" => %{
+        "message" => "`plane_api` expects either a relative Plane API path string or an object with `path` and optional `method`/`query`/`body`."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_plane_method) do
+    %{
+      "error" => %{
+        "message" => "`plane_api.method` must be one of GET, POST, PATCH, PUT, or DELETE."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_plane_path) do
+    %{
+      "error" => %{
+        "message" => "`plane_api.path` must be a relative Plane API path such as `/workspaces/<workspace>/projects/<project>/work-items/<id>` and must not include a full URL."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_plane_query) do
+    %{
+      "error" => %{
+        "message" => "`plane_api.query` must be a JSON object when provided."
+      }
+    }
+  end
+
+  defp tool_error_payload(:invalid_plane_body) do
+    %{
+      "error" => %{
+        "message" => "`plane_api.body` must be a JSON object when provided."
+      }
+    }
+  end
+
+  defp tool_error_payload({:plane_body_not_allowed, method}) do
+    %{
+      "error" => %{
+        "message" => "`plane_api.body` is only allowed for POST, PATCH, and PUT requests.",
+        "method" => method |> Atom.to_string() |> String.upcase()
+      }
+    }
+  end
+
+  defp tool_error_payload({:notion_body_not_allowed, method}) do
+    %{
+      "error" => %{
+        "message" => "`notion_api.body` is only allowed for POST and PATCH requests.",
+        "method" => method |> Atom.to_string() |> String.upcase()
+      }
+    }
+  end
+
   defp tool_error_payload(:missing_linear_api_token) do
     %{
       "error" => %{
@@ -194,16 +642,163 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
-  defp tool_error_payload(reason) do
+  defp tool_error_payload(:missing_notion_api_token) do
     %{
       "error" => %{
-        "message" => "Linear GraphQL tool execution failed.",
+        "message" => "Symphony is missing Notion auth. Set `tracker.api_key` in `WORKFLOW.md` or export `NOTION_API_KEY`."
+      }
+    }
+  end
+
+  defp tool_error_payload({:notion_api_request, reason}) do
+    %{
+      "error" => %{
+        "message" => "Notion API request failed before receiving a successful response.",
         "reason" => inspect(reason)
       }
     }
   end
 
-  defp supported_tool_names do
-    Enum.map(tool_specs(), & &1["name"])
+  defp tool_error_payload(:missing_plane_api_token) do
+    %{
+      "error" => %{
+        "message" => "Symphony is missing Plane auth. Set `tracker.api_key` in `WORKFLOW.md` or export `PLANE_API_KEY`."
+      }
+    }
+  end
+
+  defp tool_error_payload({:plane_api_request, reason}) do
+    %{
+      "error" => %{
+        "message" => "Plane API request failed before receiving a successful response.",
+        "reason" => inspect(reason)
+      }
+    }
+  end
+
+  defp tool_error_payload({:linear_tool_failure, reason}) do
+    case reason do
+      :missing_query ->
+        tool_error_payload(:missing_query)
+
+      :invalid_arguments ->
+        tool_error_payload(:invalid_arguments)
+
+      :invalid_variables ->
+        tool_error_payload(:invalid_variables)
+
+      :missing_linear_api_token ->
+        tool_error_payload(:missing_linear_api_token)
+
+      {:linear_api_status, _status} = status_reason ->
+        tool_error_payload(status_reason)
+
+      {:linear_api_request, _inner} = request_reason ->
+        tool_error_payload(request_reason)
+
+      other ->
+        %{
+          "error" => %{
+            "message" => "Linear GraphQL tool execution failed.",
+            "reason" => inspect(other)
+          }
+        }
+    end
+  end
+
+  defp tool_error_payload({:notion_tool_failure, reason}) do
+    case reason do
+      :missing_notion_path ->
+        tool_error_payload(:missing_notion_path)
+
+      :invalid_notion_arguments ->
+        tool_error_payload(:invalid_notion_arguments)
+
+      :invalid_notion_method ->
+        tool_error_payload(:invalid_notion_method)
+
+      :invalid_notion_path ->
+        tool_error_payload(:invalid_notion_path)
+
+      :invalid_notion_body ->
+        tool_error_payload(:invalid_notion_body)
+
+      {:notion_body_not_allowed, _method} = body_reason ->
+        tool_error_payload(body_reason)
+
+      :missing_notion_api_token ->
+        tool_error_payload(:missing_notion_api_token)
+
+      {:notion_api_request, _inner} = request_reason ->
+        tool_error_payload(request_reason)
+
+      other ->
+        %{
+          "error" => %{
+            "message" => "Notion API tool execution failed.",
+            "reason" => inspect(other)
+          }
+        }
+    end
+  end
+
+  defp tool_error_payload({:plane_tool_failure, reason}) do
+    case reason do
+      :missing_plane_path ->
+        tool_error_payload(:missing_plane_path)
+
+      :invalid_plane_arguments ->
+        tool_error_payload(:invalid_plane_arguments)
+
+      :invalid_plane_method ->
+        tool_error_payload(:invalid_plane_method)
+
+      :invalid_plane_path ->
+        tool_error_payload(:invalid_plane_path)
+
+      :invalid_plane_query ->
+        tool_error_payload(:invalid_plane_query)
+
+      :invalid_plane_body ->
+        tool_error_payload(:invalid_plane_body)
+
+      {:plane_body_not_allowed, _method} = body_reason ->
+        tool_error_payload(body_reason)
+
+      :missing_plane_api_token ->
+        tool_error_payload(:missing_plane_api_token)
+
+      {:plane_api_request, _inner} = request_reason ->
+        tool_error_payload(request_reason)
+
+      other ->
+        %{
+          "error" => %{
+            "message" => "Plane API tool execution failed.",
+            "reason" => inspect(other)
+          }
+        }
+    end
+  end
+
+  defp tool_error_payload(reason) do
+    %{
+      "error" => %{
+        "message" => "Dynamic tool execution failed.",
+        "reason" => inspect(reason)
+      }
+    }
+  end
+
+  defp current_tracker_kind(opts) do
+    Keyword.get(opts, :tracker_kind) ||
+      case Config.settings() do
+        {:ok, settings} -> settings.tracker.kind
+        _ -> nil
+      end
+  end
+
+  defp supported_tool_names(opts) do
+    Enum.map(tool_specs(opts), & &1["name"])
   end
 end

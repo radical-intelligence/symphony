@@ -206,6 +206,31 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert {:error, {:workspace_hook_failed, "after_create", 17, _output}} =
                Workspace.create_for_issue("MT-FAIL")
+
+      refute File.exists?(Path.join(workspace_root, "MT-FAIL"))
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "workspace fails fast when an earlier after_create command fails" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-early-failure-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "set -e\nsh -c 'echo bootstrap failed >&2; exit 17'\necho bootstrapped > README.md"
+      )
+
+      assert {:error, {:workspace_hook_failed, "after_create", 17, output}} =
+               Workspace.create_for_issue("MT-EARLY-FAIL")
+
+      assert IO.iodata_to_binary(output) =~ "bootstrap failed"
+      refute File.exists?(Path.join(workspace_root, "MT-EARLY-FAIL"))
     after
       File.rm_rf(workspace_root)
     end
@@ -627,6 +652,149 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert :ok = Workspace.remove_issue_workspaces("MT-HOOKS")
       assert File.read!(before_remove_marker) == "before_remove\n"
       refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace reruns after_create when an existing issue directory is empty" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-empty-retry-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace = Path.join(workspace_root, "MT-EMPTY")
+      File.mkdir_p!(workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "echo bootstrapped > README.md"
+      )
+
+      assert {:ok, ^workspace} = Workspace.create_for_issue("MT-EMPTY")
+      assert File.read!(Path.join(workspace, "README.md")) == "bootstrapped\n"
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "remote workspace hooks forward referenced environment variables" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-workspace-env-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+    previous_project_repo_url = System.get_env("PROJECT_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+      restore_env("PROJECT_REPO_URL", previous_project_repo_url)
+    end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      workspace_root = "~/.symphony-remote-workspaces"
+      workspace_path = "/remote/home/.symphony-remote-workspaces/MT-SSH-ENV"
+      repo_url = "git@github.com:example-org/example-repo.git"
+
+      File.mkdir_p!(test_root)
+      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      System.put_env("PROJECT_REPO_URL", repo_url)
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+
+      case "$*" in
+        *"__SYMPHONY_WORKSPACE__"*)
+          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
+          ;;
+      esac
+
+      exit 0
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01:2200"],
+        hook_after_create: "printf '%s' \"$PROJECT_REPO_URL\" > repo-url.txt"
+      )
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-SSH-ENV", "worker-01:2200")
+
+      trace = File.read!(trace_file)
+      assert trace =~ "export PROJECT_REPO_URL="
+      assert trace =~ repo_url
+      assert trace =~ "repo-url.txt"
+      assert trace =~ "$PROJECT_REPO_URL"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "remote workspace hooks run with fail-fast shell semantics" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-workspace-hook-flags-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+    end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      workspace_root = "~/.symphony-remote-workspaces"
+      workspace_path = "/remote/home/.symphony-remote-workspaces/MT-SSH-SET-E"
+
+      File.mkdir_p!(test_root)
+      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+
+      case "$*" in
+        *"__SYMPHONY_WORKSPACE__"*)
+          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
+          ;;
+      esac
+
+      exit 0
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01:2200"],
+        hook_after_create: "echo ready > READY.txt"
+      )
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-SSH-SET-E", "worker-01:2200")
+
+      trace = File.read!(trace_file)
+      assert trace =~ "set -e"
+      assert trace =~ "echo ready > READY.txt"
     after
       File.rm_rf(test_root)
     end

@@ -1,0 +1,7 @@
+# Copy this file to docker/symphony_ssh_config.local and replace the placeholder values.
+Host symphony-host
+  HostName host.docker.internal
+  User your-username
+  Port 22
+  IdentityFile /run/secrets/symphony_worker_ed25519
+  StrictHostKeyChecking accept-new

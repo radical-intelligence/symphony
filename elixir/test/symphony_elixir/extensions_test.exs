@@ -5,6 +5,8 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.LiveViewTest
 
   alias SymphonyElixir.Linear.Adapter
+  alias SymphonyElixir.Notion.Adapter, as: NotionAdapter
+  alias SymphonyElixir.Plane.Adapter, as: PlaneAdapter
   alias SymphonyElixir.Tracker.Memory
 
   @endpoint SymphonyElixirWeb.Endpoint
@@ -36,6 +38,60 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
+    end
+  end
+
+  defmodule FakeNotionClient do
+    def fetch_candidate_issues do
+      send(self(), :fetch_notion_candidate_issues_called)
+      {:ok, [:notion_candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:fetch_notion_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:fetch_notion_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def create_comment(issue_id, body) do
+      send(self(), {:create_notion_comment_called, issue_id, body})
+      :ok
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:update_notion_issue_state_called, issue_id, state_name})
+      :ok
+    end
+  end
+
+  defmodule FakePlaneClient do
+    def fetch_candidate_issues do
+      send(self(), :fetch_plane_candidate_issues_called)
+      {:ok, [:plane_candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:fetch_plane_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:fetch_plane_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def create_comment(issue_id, body) do
+      send(self(), {:create_plane_comment_called, issue_id, body})
+      :ok
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:update_plane_issue_state_called, issue_id, state_name})
+      :ok
     end
   end
 
@@ -79,12 +135,26 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    notion_client_module = Application.get_env(:symphony_elixir, :notion_client_module)
+    plane_client_module = Application.get_env(:symphony_elixir, :plane_client_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(notion_client_module) do
+        Application.delete_env(:symphony_elixir, :notion_client_module)
+      else
+        Application.put_env(:symphony_elixir, :notion_client_module, notion_client_module)
+      end
+
+      if is_nil(plane_client_module) do
+        Application.delete_env(:symphony_elixir, :plane_client_module)
+      else
+        Application.put_env(:symphony_elixir, :plane_client_module, plane_client_module)
       end
     end)
 
@@ -181,7 +251,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     WorkflowStore.force_reload()
   end
 
-  test "tracker delegates to memory and linear adapters" do
+  test "tracker delegates to memory, linear, notion, and plane adapters" do
     issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue, %{id: "ignored"}])
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
@@ -203,6 +273,60 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+
+    Application.put_env(:symphony_elixir, :notion_client_module, FakeNotionClient)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_endpoint: nil,
+      tracker_api_token: "notion-token",
+      tracker_data_source_id: "source-1"
+    )
+
+    assert Config.settings!().tracker.kind == "notion"
+    assert SymphonyElixir.Tracker.adapter() == NotionAdapter
+    assert {:ok, [:notion_candidate]} = SymphonyElixir.Tracker.fetch_candidate_issues()
+    assert_receive :fetch_notion_candidate_issues_called
+
+    assert {:ok, ["Todo"]} = SymphonyElixir.Tracker.fetch_issues_by_states(["Todo"])
+    assert_receive {:fetch_notion_issues_by_states_called, ["Todo"]}
+
+    assert {:ok, ["page-1"]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["page-1"])
+    assert_receive {:fetch_notion_issue_states_by_ids_called, ["page-1"]}
+
+    assert :ok = SymphonyElixir.Tracker.create_comment("page-1", "comment")
+    assert_receive {:create_notion_comment_called, "page-1", "comment"}
+
+    assert :ok = SymphonyElixir.Tracker.update_issue_state("page-1", "Done")
+    assert_receive {:update_notion_issue_state_called, "page-1", "Done"}
+
+    Application.put_env(:symphony_elixir, :plane_client_module, FakePlaneClient)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "plane",
+      tracker_endpoint: nil,
+      tracker_api_token: "plane-token",
+      tracker_project_slug: nil,
+      tracker_workspace_slug: "workspace-1",
+      tracker_project_id: "project-1"
+    )
+
+    assert Config.settings!().tracker.kind == "plane"
+    assert SymphonyElixir.Tracker.adapter() == PlaneAdapter
+    assert {:ok, [:plane_candidate]} = SymphonyElixir.Tracker.fetch_candidate_issues()
+    assert_receive :fetch_plane_candidate_issues_called
+
+    assert {:ok, ["Todo"]} = SymphonyElixir.Tracker.fetch_issues_by_states(["Todo"])
+    assert_receive {:fetch_plane_issues_by_states_called, ["Todo"]}
+
+    assert {:ok, ["work-item-1"]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["work-item-1"])
+    assert_receive {:fetch_plane_issue_states_by_ids_called, ["work-item-1"]}
+
+    assert :ok = SymphonyElixir.Tracker.create_comment("work-item-1", "comment")
+    assert_receive {:create_plane_comment_called, "work-item-1", "comment"}
+
+    assert :ok = SymphonyElixir.Tracker.update_issue_state("work-item-1", "Done")
+    assert_receive {:update_plane_issue_state_called, "work-item-1", "Done"}
   end
 
   test "linear adapter delegates reads and validates mutation responses" do

@@ -216,9 +216,11 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp remote_launch_command(workspace) when is_binary(workspace) do
     [
+      remote_command_env_exports(Config.settings!().codex.command),
       "cd #{shell_escape(workspace)}",
       "exec #{Config.settings!().codex.command}"
     ]
+    |> Enum.reject(&(&1 == ""))
     |> Enum.join(" && ")
   end
 
@@ -236,6 +238,46 @@ defmodule SymphonyElixir.Codex.AppServer do
       host when is_binary(host) -> Map.put(base_metadata, :worker_host, host)
       _ -> base_metadata
     end
+  end
+
+  defp remote_command_env_exports(command) when is_binary(command) do
+    command
+    |> referenced_env_var_names()
+    |> Enum.reject(&reserved_remote_env_var?/1)
+    |> Enum.flat_map(fn env_name ->
+      case System.get_env(env_name) do
+        nil -> []
+        value -> ["export #{env_name}=#{shell_escape(value)}"]
+      end
+    end)
+    |> Enum.join(" && ")
+  end
+
+  defp referenced_env_var_names(command) when is_binary(command) do
+    ~r/(?<!\\)\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}|([A-Za-z_][A-Za-z0-9_]*))/
+    |> Regex.scan(command, capture: :all_but_first)
+    |> Enum.flat_map(fn
+      [name] -> [name]
+      [first, second] -> Enum.filter([first, second], &(&1 not in [nil, ""]))
+    end)
+    |> Enum.uniq()
+  end
+
+  defp reserved_remote_env_var?(env_name) when is_binary(env_name) do
+    env_name in [
+      "HOME",
+      "HOSTNAME",
+      "LOGNAME",
+      "MAIL",
+      "OLDPWD",
+      "PATH",
+      "PWD",
+      "SHELL",
+      "SHLVL",
+      "TERM",
+      "TMPDIR",
+      "USER"
+    ]
   end
 
   defp send_initialize(port) do

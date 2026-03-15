@@ -237,6 +237,30 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Linear project slug missing in WORKFLOW.md")
         state
 
+      {:error, :missing_notion_api_token} ->
+        Logger.error("Notion API token missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_notion_data_source_id} ->
+        Logger.error("Notion data source id missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_notion_assignee_property} ->
+        Logger.error("Notion assignee_property missing in WORKFLOW.md while tracker.assignee is configured")
+        state
+
+      {:error, :missing_plane_api_token} ->
+        Logger.error("Plane API token missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_plane_workspace_slug} ->
+        Logger.error("Plane workspace_slug missing in WORKFLOW.md")
+        state
+
+      {:error, :missing_plane_project_id} ->
+        Logger.error("Plane project_id missing in WORKFLOW.md")
+        state
+
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
 
@@ -264,7 +288,7 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        Logger.error("Failed to fetch from tracker: #{inspect(reason)}")
         state
 
       false ->

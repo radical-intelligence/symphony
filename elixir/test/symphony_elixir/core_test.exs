@@ -86,6 +86,69 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_api_token: "notion-token",
+      tracker_data_source_id: nil
+    )
+
+    assert {:error, :missing_notion_data_source_id} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_endpoint: nil,
+      tracker_api_token: "notion-token",
+      tracker_data_source_id: "source-1",
+      tracker_assignee: "user-1",
+      tracker_assignee_property: nil
+    )
+
+    assert {:error, :missing_notion_assignee_property} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_endpoint: nil,
+      tracker_api_token: "notion-token",
+      tracker_data_source_id: "source-1",
+      tracker_assignee: "user-1",
+      tracker_assignee_property: "Assignee"
+    )
+
+    assert :ok = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "plane",
+      tracker_endpoint: nil,
+      tracker_api_token: "plane-token",
+      tracker_project_slug: nil,
+      tracker_workspace_slug: nil,
+      tracker_project_id: nil
+    )
+
+    assert {:error, :missing_plane_workspace_slug} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "plane",
+      tracker_endpoint: nil,
+      tracker_api_token: "plane-token",
+      tracker_project_slug: nil,
+      tracker_workspace_slug: "workspace-1",
+      tracker_project_id: nil
+    )
+
+    assert {:error, :missing_plane_project_id} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "plane",
+      tracker_endpoint: nil,
+      tracker_api_token: "plane-token",
+      tracker_project_slug: nil,
+      tracker_workspace_slug: "workspace-1",
+      tracker_project_id: "project-1"
+    )
+
+    assert :ok = Config.validate!()
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -147,6 +210,85 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+  end
+
+  test "notion api token and assignee resolve from NOTION env vars" do
+    previous_notion_api_key = System.get_env("NOTION_API_KEY")
+    previous_notion_assignee = System.get_env("NOTION_ASSIGNEE")
+    previous_notion_data_source_id = System.get_env("NOTION_DATA_SOURCE_ID")
+    env_api_key = "test-notion-api-key"
+    env_assignee = "notion-user-id"
+    env_data_source_id = "env-source-1"
+
+    on_exit(fn ->
+      restore_env("NOTION_API_KEY", previous_notion_api_key)
+      restore_env("NOTION_ASSIGNEE", previous_notion_assignee)
+      restore_env("NOTION_DATA_SOURCE_ID", previous_notion_data_source_id)
+    end)
+
+    System.put_env("NOTION_API_KEY", env_api_key)
+    System.put_env("NOTION_ASSIGNEE", env_assignee)
+    System.put_env("NOTION_DATA_SOURCE_ID", env_data_source_id)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "notion",
+      tracker_endpoint: nil,
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_data_source_id: "$NOTION_DATA_SOURCE_ID",
+      tracker_assignee: nil,
+      tracker_assignee_property: "Assignee",
+      codex_command: "/bin/sh app-server"
+    )
+
+    config = Config.settings!()
+    assert config.tracker.endpoint == "https://api.notion.com/v1"
+    assert config.tracker.api_key == env_api_key
+    assert config.tracker.assignee == env_assignee
+    assert config.tracker.data_source_id == env_data_source_id
+    assert :ok = Config.validate!()
+  end
+
+  test "plane api token, workspace, project, and assignee resolve from PLANE env vars" do
+    previous_plane_api_key = System.get_env("PLANE_API_KEY")
+    previous_plane_assignee = System.get_env("PLANE_ASSIGNEE")
+    previous_plane_workspace_slug = System.get_env("PLANE_WORKSPACE_SLUG")
+    previous_plane_project_id = System.get_env("PLANE_PROJECT_ID")
+    env_api_key = "test-plane-api-key"
+    env_assignee = "plane-user-id"
+    env_workspace_slug = "workspace-env"
+    env_project_id = "project-env"
+
+    on_exit(fn ->
+      restore_env("PLANE_API_KEY", previous_plane_api_key)
+      restore_env("PLANE_ASSIGNEE", previous_plane_assignee)
+      restore_env("PLANE_WORKSPACE_SLUG", previous_plane_workspace_slug)
+      restore_env("PLANE_PROJECT_ID", previous_plane_project_id)
+    end)
+
+    System.put_env("PLANE_API_KEY", env_api_key)
+    System.put_env("PLANE_ASSIGNEE", env_assignee)
+    System.put_env("PLANE_WORKSPACE_SLUG", env_workspace_slug)
+    System.put_env("PLANE_PROJECT_ID", env_project_id)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "plane",
+      tracker_endpoint: nil,
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_workspace_slug: "$PLANE_WORKSPACE_SLUG",
+      tracker_project_id: "$PLANE_PROJECT_ID",
+      tracker_assignee: nil,
+      codex_command: "/bin/sh app-server"
+    )
+
+    config = Config.settings!()
+    assert config.tracker.endpoint == "https://api.plane.so"
+    assert config.tracker.api_key == env_api_key
+    assert config.tracker.assignee == env_assignee
+    assert config.tracker.workspace_slug == env_workspace_slug
+    assert config.tracker.project_id == env_project_id
+    assert :ok = Config.validate!()
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
@@ -784,6 +926,34 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket S-1 Refactor backend request path"
     assert prompt =~ "labels=backend"
     assert prompt =~ "attempt=3"
+  end
+
+  test "prompt builder exposes non-secret tracker context values" do
+    workflow_prompt = "workspace={{ tracker.workspace_slug }} project={{ tracker.project_id }} issue={{ issue.identifier }}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "plane",
+      tracker_endpoint: nil,
+      tracker_api_token: "plane-token",
+      tracker_project_slug: nil,
+      tracker_workspace_slug: "workspace-ctx",
+      tracker_project_id: "project-ctx",
+      prompt: workflow_prompt
+    )
+
+    issue = %Issue{
+      identifier: "PLN-1",
+      title: "Render tracker context",
+      description: "Prompt should include tracker context",
+      state: "Todo",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "workspace=workspace-ctx"
+    assert prompt =~ "project=project-ctx"
+    assert prompt =~ "issue=PLN-1"
   end
 
   test "prompt builder renders issue datetime fields without crashing" do
