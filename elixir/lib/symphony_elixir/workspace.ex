@@ -284,7 +284,6 @@ defmodule SymphonyElixir.Workspace do
       command ->
         script =
           [
-            "set -e",
             remote_shell_assign("workspace", workspace),
             "if [ -d \"$workspace\" ]; then",
             "  cd \"$workspace\"",
@@ -323,7 +322,7 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", hook_script(command)], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -344,7 +343,7 @@ defmodule SymphonyElixir.Workspace do
     env_exports = remote_hook_env_exports(command)
 
     script =
-      [env_exports, "cd #{shell_escape(workspace)}", hook_script(command)]
+      [env_exports, "cd #{shell_escape(workspace)}", command]
       |> Enum.reject(&(&1 == ""))
       |> Enum.join("\n")
 
@@ -483,41 +482,73 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp cleanup_failed_workspace(workspace, issue_context, nil) when is_binary(workspace) do
-    File.rm_rf(workspace)
+    if debug_failed_workspaces?() do
+      failed_path = failed_workspace_path(workspace)
+      File.rename(workspace, failed_path)
 
-    Logger.warning("Removed failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
+      Logger.warning("Renamed failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} renamed_to=#{failed_path} worker_host=local")
+    else
+      File.rm_rf(workspace)
+
+      Logger.warning("Removed failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
+    end
 
     :ok
   rescue
     error in [File.Error, ErlangError] ->
-      Logger.warning("Failed to remove failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local error=#{Exception.message(error)}")
+      Logger.warning("Failed to clean up failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local error=#{Exception.message(error)}")
 
       :ok
   end
 
   defp cleanup_failed_workspace(workspace, issue_context, worker_host)
        when is_binary(workspace) and is_binary(worker_host) do
-    script =
-      [
-        remote_shell_assign("workspace", workspace),
-        "rm -rf \"$workspace\""
-      ]
-      |> Enum.join("\n")
+    {action, script} =
+      if debug_failed_workspaces?() do
+        failed_path = failed_workspace_path(workspace)
+
+        s =
+          [
+            remote_shell_assign("workspace", workspace),
+            "mv \"$workspace\" #{shell_escape(failed_path)}"
+          ]
+          |> Enum.join("\n")
+
+        {"renamed", s}
+      else
+        s =
+          [
+            remote_shell_assign("workspace", workspace),
+            "rm -rf \"$workspace\""
+          ]
+          |> Enum.join("\n")
+
+        {"removed", s}
+      end
 
     case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
       {:ok, {_output, 0}} ->
-        Logger.warning("Removed failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
+        Logger.warning("#{String.capitalize(action)} failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
       {:ok, {output, status}} ->
         Logger.warning(
-          "Failed to remove failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host} status=#{status} output=#{inspect(sanitize_hook_output_for_log(output))}"
+          "Failed to clean up failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host} status=#{status} output=#{inspect(sanitize_hook_output_for_log(output))}"
         )
 
       {:error, reason} ->
-        Logger.warning("Failed to remove failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host} error=#{inspect(reason)}")
+        Logger.warning("Failed to clean up failed bootstrap workspace #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host} error=#{inspect(reason)}")
     end
 
     :ok
+  end
+
+  defp debug_failed_workspaces? do
+    System.get_env("SYMPHONY_DEBUG_FAILED_WORKSPACES") in ["1", "true"]
+  end
+
+  defp failed_workspace_path(workspace) when is_binary(workspace) do
+    timestamp = System.system_time(:second)
+    "#{workspace}__failed__#{timestamp}"
   end
 
   defp run_remote_command(worker_host, script, timeout_ms)
@@ -579,10 +610,6 @@ defmodule SymphonyElixir.Workspace do
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
-  end
-
-  defp hook_script(command) when is_binary(command) do
-    "set -e\n" <> command
   end
 
   defp worker_host_for_log(nil), do: "local"

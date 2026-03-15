@@ -24,9 +24,20 @@ tracker:
 polling:
   interval_ms: 5000
 workspace:
-  root: ~/code/symphony-notion-workspaces
+  root: /Users/pandemosthenous/code/symphony-notion-workspaces
+  # Local mode:
+  # root: ~/code/symphony-notion-workspaces
+# SSH host-worker mode — Symphony runs in Docker, Codex workers run on the host
+# via SSH. Remove the worker section to run agents locally instead.
+worker:
+  ssh_hosts:
+    - symphony-host
+  max_concurrent_agents_per_host: 3
 hooks:
   after_create: |
+    # Abort on first failure — a broken clone should not leave a half-initialised
+    # workspace for the agent to discover.
+    set -e
     git clone --depth 1 https://github.com/openai/symphony .
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
@@ -37,11 +48,17 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
+  # Host-worker mode — absolute path so the remote SSH session finds codex.
+  command: /opt/homebrew/bin/codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
+  # Local mode — codex inherits the host environment directly:
+  # command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
+# Phoenix dashboard — exposes the observability UI.
+server:
+  port: 4103
 ---
 
 You are working on a Notion task `{{ issue.identifier }}`

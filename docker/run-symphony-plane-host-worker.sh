@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORKFLOW_ARG="${1:-./elixir/WORKFLOW.plane.host-worker.md}"
+WORKFLOW_ARG="${1:-./elixir/WORKFLOW.plane.md}"
 IMAGE="${SYMPHONY_DOCKER_IMAGE:-elixir:1.19}"
 CONTAINER_NAME="${SYMPHONY_CONTAINER_NAME:-symphony-plane-orchestrator}"
 SSH_KEY_PATH="${SYMPHONY_SSH_KEY_PATH:-${HOME}/.ssh/symphony_worker_ed25519}"

@@ -223,7 +223,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "sh -c 'echo bootstrap failed >&2; exit 17'\necho bootstrapped > README.md"
+        hook_after_create: "set -e\nsh -c 'echo bootstrap failed >&2; exit 17'\necho bootstrapped > README.md"
       )
 
       assert {:error, {:workspace_hook_failed, "after_create", 17, output}} =

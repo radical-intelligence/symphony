@@ -24,7 +24,7 @@ Supported tracker adapters today:
 
 - `linear`: polls a Linear project via GraphQL
 - `plane`: polls a Plane project via the REST API
-- `notion`: polls a Notion data source via the REST API
+- `notion` (experimental): polls a Notion data source via the REST API
 - `memory`: in-memory tracker for tests and local harnesses
 
 During tracker-backed app-server sessions, Symphony also serves a client-side tool for raw tracker
@@ -47,10 +47,10 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
    - Plane: create a Plane API key and set `PLANE_API_KEY`. Also set `PLANE_WORKSPACE_SLUG` and
      `PLANE_PROJECT_ID` for the workspace/project Symphony should manage. If you want Symphony to
      pick up only issues assigned to one Plane user, also set `PLANE_ASSIGNEE`. The bundled Plane
-     templates also expect `PROJECT_REPO_URL`, and the host-worker helper expects
+     template also expects `PROJECT_REPO_URL`, and the host-worker helper expects
      `SYMPHONY_WORKSPACE_ROOT`.
-   - Notion: create an internal integration, share the target data source with it, and set the
-     integration token as the `NOTION_API_KEY` environment variable.
+   - Notion (experimental): create an internal integration, share the target data source with it,
+     and set the integration token as the `NOTION_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
    - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
@@ -62,11 +62,6 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
      - When creating a workflow based on this repo, note that it depends on non-standard Linear
        issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
        Team Settings → Workflow in Linear.
-   - Notion:
-     - Set `tracker.kind: notion`.
-     - Set `tracker.data_source_id` to the target Notion data source ID.
-     - If you want Symphony to route only tasks assigned to a specific user, set
-       `tracker.assignee` and `tracker.assignee_property`.
    - Plane:
      - Set `tracker.kind: plane`.
      - Set `tracker.workspace_slug` and `tracker.project_id` to the Plane workspace/project that
@@ -76,13 +71,18 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
      - Set `PROJECT_REPO_URL` in the shell or local env file used by the workflow helper so
        `hooks.after_create` can clone the repo under automation.
      - Set `workspace.root` directly or export `SYMPHONY_WORKSPACE_ROOT` for the bundled Plane
-       templates.
-     - The bundled Plane templates assume the review-loop states `Todo`, `In Progress`,
+       template.
+     - The bundled Plane template assumes the review-loop states `Todo`, `In Progress`,
        `Human Review`, `Merging`, `Rework`, `Done`, and `Cancelled`. Either sync those states with
        `./docker/sync-plane-states.sh --with-review-loop` or customize the workflow state names to
        match your project.
      - Keep repo/project-specific values in local env files or copied local workflow files rather
-       than editing the committed Plane templates in this repo.
+       than editing the committed Plane template in this repo.
+   - Notion (experimental):
+     - Set `tracker.kind: notion`.
+     - Set `tracker.data_source_id` to the target Notion data source ID.
+     - If you want Symphony to route only tasks assigned to a specific user, set
+       `tracker.assignee` and `tracker.assignee_property`.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
 
 ## Prerequisites
@@ -116,10 +116,8 @@ Pass a custom workflow file path to `./bin/symphony` when starting the service:
 
 If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 
-For a local Notion tracker smoke test in this repo, you can start from
-`./WORKFLOW.notion.smoke.md`.
-
-For a fuller Notion end-to-end workflow template, start from `./WORKFLOW.notion.md`.
+For Plane, start from `./WORKFLOW.plane.md`. For Notion (experimental), start from
+`./WORKFLOW.notion.md`.
 
 Optional flags:
 
@@ -149,36 +147,6 @@ codex:
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
-
-Title: {{ issue.title }} Body: {{ issue.description }}
-```
-
-Minimal Notion example:
-
-```md
----
-tracker:
-  kind: notion
-  data_source_id: "..."
-  api_key: $NOTION_API_KEY
-  assignee: $NOTION_ASSIGNEE
-  assignee_property: Assignee
-  active_states:
-    - Not started
-    - In progress
-workspace:
-  root: ~/code/workspaces
-hooks:
-  after_create: |
-    git clone git@github.com:your-org/your-repo.git .
-agent:
-  max_concurrent_agents: 10
-  max_turns: 20
-codex:
-  command: codex app-server
----
-
-You are working on task {{ issue.identifier }}.
 
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
@@ -213,19 +181,46 @@ You are working on Plane work item {{ issue.identifier }}.
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
 
-Reference Notion workflow templates in this repo:
+Minimal Notion example (experimental):
 
-- `./WORKFLOW.notion.md`: fuller end-to-end Notion workflow using `notion_api`
-- `./WORKFLOW.notion.smoke.md`: low-risk local smoke test that proves polling, workspace bootstrap,
-  tool access, and comment round-tripping
+```md
+---
+tracker:
+  kind: notion
+  data_source_id: "..."
+  api_key: $NOTION_API_KEY
+  assignee: $NOTION_ASSIGNEE
+  assignee_property: Assignee
+  active_states:
+    - Not started
+    - In progress
+workspace:
+  root: ~/code/workspaces
+hooks:
+  after_create: |
+    git clone git@github.com:your-org/your-repo.git .
+agent:
+  max_concurrent_agents: 10
+  max_turns: 20
+codex:
+  command: codex app-server
+---
 
-Reference Plane workflow templates in this repo:
+You are working on task {{ issue.identifier }}.
 
-- `./WORKFLOW.plane.md`: generic Plane reference workflow using a single editable Plane workpad
-  comment, review-loop states, `plane_api`, direct external-source verification, and durable
-  artifact gates
-- `./WORKFLOW.plane.host-worker.md`: the same Plane reference workflow plus Docker-orchestrator to
-  SSH-worker wiring, dashboard config, and GitHub token passthrough for unattended PR creation
+Title: {{ issue.title }} Body: {{ issue.description }}
+```
+
+Reference Plane workflow template in this repo:
+
+- `./WORKFLOW.plane.md`: Plane reference workflow using a single editable Plane workpad comment,
+  review-loop states, `plane_api`, direct external-source verification, and durable artifact
+  gates. Includes commented-out blocks for SSH host-worker mode, GitHub token passthrough, and
+  the Phoenix dashboard
+
+Reference Notion workflow template (experimental — not extensively tested):
+
+- `./WORKFLOW.notion.md`: end-to-end Notion workflow using `notion_api`
 
 Bundled Plane workflow conventions:
 
@@ -258,31 +253,31 @@ Notes:
   `git clone ... .` there, along with any other setup commands you need.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.endpoint` defaults to `https://api.linear.app/graphql` for `tracker.kind: linear` and
-  `https://api.notion.com/v1` for `tracker.kind: notion`, and `https://api.plane.so` for
-  `tracker.kind: plane`.
-- `tracker.api_key` reads from `LINEAR_API_KEY` for Linear, `NOTION_API_KEY` for Notion, and
-  `PLANE_API_KEY` for Plane when unset or when value is `$LINEAR_API_KEY`, `$NOTION_API_KEY`, or
-  `$PLANE_API_KEY`.
+- `tracker.endpoint` defaults to `https://api.linear.app/graphql` for `tracker.kind: linear`,
+  `https://api.plane.so` for `tracker.kind: plane`, and `https://api.notion.com/v1` for
+  `tracker.kind: notion`.
+- `tracker.api_key` reads from `LINEAR_API_KEY` for Linear, `PLANE_API_KEY` for Plane, and
+  `NOTION_API_KEY` for Notion when unset or when value is `$LINEAR_API_KEY`, `$PLANE_API_KEY`, or
+  `$NOTION_API_KEY`.
 - `tracker.project_slug` is required for Linear workflows.
 - `tracker.workspace_slug` and `tracker.project_id` are required for Plane workflows.
+- If `tracker.assignee` is set for a Plane workflow and omitted in config, Symphony reads it from
+  `PLANE_ASSIGNEE`.
+- Plane agent sessions get a raw `plane_api` tool rooted at the configured Plane endpoint and auth.
+  The tool accepts a relative REST path plus optional HTTP method, query, and JSON body.
+- Prompt templates also receive a non-secret `tracker` object, which is useful for Plane REST paths
+  such as `{{ tracker.workspace_slug }}` and `{{ tracker.project_id }}`.
+- The bundled Plane workflow template uses a single editable workpad comment in Plane rather than
+  append-only progress comments, and expects the review-loop state machine documented above.
 - `tracker.data_source_id` is required for Notion workflows.
 - If `tracker.assignee` is set for a Notion workflow, `tracker.assignee_property` is also
   required.
-- If `tracker.assignee` is set for a Plane workflow and omitted in config, Symphony reads it from
-  `PLANE_ASSIGNEE`.
 - Notion workflows require a title property plus a `status` or `select` property for task state.
   Optional overrides are available for `status_property`, `title_property`,
   `identifier_property`, `description_property`, `labels_property`, `priority_property`, and
   `assignee_property`.
-- Plane agent sessions get a raw `plane_api` tool rooted at the configured Plane endpoint and auth.
-  The tool accepts a relative REST path plus optional HTTP method, query, and JSON body.
 - Notion agent sessions get a raw `notion_api` tool rooted at the configured Notion endpoint and
   auth. The tool accepts a relative REST path plus optional HTTP method and JSON body.
-- Prompt templates also receive a non-secret `tracker` object, which is useful for Plane REST paths
-  such as `{{ tracker.workspace_slug }}` and `{{ tracker.project_id }}`.
-- The bundled Plane workflow templates use a single editable workpad comment in Plane rather than
-  append-only progress comments, and they expect the review-loop state machine documented above.
 - The bundled Notion workflow template uses append-only page comments for progress/handoff notes
   rather than trying to edit a single persistent comment in place.
 - For path values, `~` is expanded to the home directory.
@@ -370,8 +365,7 @@ export PLANE_WORKSPACE_SLUG=...
 make e2e-plane
 ```
 
-If you want the same local-file workflow we use for Notion helpers, copy the example env file at
-the repo root and use the helper script instead:
+You can also copy the example env file at the repo root and use the helper script instead:
 
 ```bash
 cp .env.plane.local.example .env.plane.local
@@ -415,7 +409,7 @@ cp docker/symphony_ssh_config.example docker/symphony_ssh_config.local
 ./docker/run-symphony-plane-host-worker.sh
 ```
 
-By default the helper runs `./WORKFLOW.plane.host-worker.md`, sources `.env.plane.local` if it
+By default the helper runs `./WORKFLOW.plane.md`, sources `.env.plane.local` if it
 exists, mounts `docker/symphony_ssh_config.local` into the container, and expects at least:
 
 - `PLANE_API_KEY`
@@ -457,8 +451,8 @@ To create those optional states too, run:
 ./docker/sync-plane-states.sh --with-review-loop
 ```
 
-Use `--with-review-loop` for the bundled `WORKFLOW.plane.md` and
-`WORKFLOW.plane.host-worker.md` templates, since both assume the full review-loop state machine.
+Use `--with-review-loop` for the bundled `WORKFLOW.plane.md` template, since it assumes the full
+review-loop state machine.
 
 Use `--dry-run` to print recommendations without changing Plane:
 
@@ -468,9 +462,8 @@ Use `--dry-run` to print recommendations without changing Plane:
 
 The sync helper prefers local `mise`/`mix` when available and falls back to Docker otherwise.
 
-Notion tracker coverage remains in the unit and integration-style tests under
-`test/symphony_elixir/notion_client_test.exs`. Plane also retains its adapter-level coverage under
-`test/symphony_elixir/plane_client_test.exs`.
+Plane adapter-level coverage is under `test/symphony_elixir/plane_client_test.exs`. Notion tracker
+coverage remains in `test/symphony_elixir/notion_client_test.exs`.
 
 ## FAQ
 

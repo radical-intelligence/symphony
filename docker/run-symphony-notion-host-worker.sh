@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-WORKFLOW_ARG="${1:-./elixir/WORKFLOW.notion.smoke.host-worker.md}"
+WORKFLOW_ARG="${1:-./elixir/WORKFLOW.notion.md}"
 IMAGE="${SYMPHONY_DOCKER_IMAGE:-elixir:1.19}"
 SSH_KEY_PATH="${SYMPHONY_SSH_KEY_PATH:-${HOME}/.ssh/symphony_worker_ed25519}"
 SSH_CONFIG_PATH="${SYMPHONY_SSH_CONFIG_PATH:-${ROOT_DIR}/docker/symphony_ssh_config.local}"
