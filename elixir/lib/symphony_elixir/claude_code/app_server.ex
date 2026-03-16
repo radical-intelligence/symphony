@@ -28,11 +28,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     worker_host = Keyword.get(opts, :worker_host)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host) do
-      wrote_mcp? =
-        case SymphonyElixir.ClaudeCode.McpConfig.write_mcp_config(expanded_workspace) do
-          {:ok, _path} -> true
-          _ -> false
-        end
+      wrote_mcp? = write_remote_mcp_config(expanded_workspace, worker_host)
 
       {:ok,
        %{
@@ -158,32 +154,32 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
   end
 
   defp start_unbuffered_ssh_port(worker_host, command) do
-    # Write a wrapper script that calls `stdbuf -oL ssh ...`. This avoids
-    # all shell quoting issues — the script file preserves the exact command
-    # without any escaping layers.
-    wrapper = Path.join(System.tmp_dir!(), "symphony-ssh-#{System.unique_integer([:positive])}.sh")
-
+    # Write the remote_shell command to a file, then have a wrapper script
+    # read it and pass it as a single quoted argument to SSH. This preserves
+    # the bash -lc quoting without any shell interpretation.
     ssh_config = System.get_env("SYMPHONY_SSH_CONFIG")
     remote_shell = SSH.remote_shell_command(command)
     trimmed_host = String.trim(worker_host)
 
-    config_args = if ssh_config, do: "-F #{shell_escape(ssh_config)} ", else: ""
-
-    {host_arg, port_arg} =
+    {destination, port_arg} =
       case Regex.run(~r/^(.*):(\d+)$/, trimmed_host, capture: :all_but_first) do
         [dest, p] -> {dest, "-p #{p} "}
         _ -> {trimmed_host, ""}
       end
 
-    ssh_cmd = "ssh #{config_args}-T #{port_arg}#{host_arg} #{remote_shell}"
+    config_arg = if ssh_config, do: "-F '#{ssh_config}' ", else: ""
+
+    base_id = System.unique_integer([:positive])
+    wrapper = Path.join(System.tmp_dir!(), "symphony-ssh-#{base_id}.sh")
+    cmd_file = Path.join(System.tmp_dir!(), "symphony-ssh-#{base_id}.cmd")
+
+    File.write!(cmd_file, remote_shell)
 
     script = """
     #!/bin/sh
-    if command -v stdbuf >/dev/null 2>&1; then
-      exec stdbuf -oL #{ssh_cmd}
-    else
-      exec #{ssh_cmd}
-    fi
+    _cmd="$(cat '#{cmd_file}')"
+    rm -f '#{cmd_file}'
+    exec ssh #{config_arg}-T #{port_arg}#{destination} "$_cmd"
     """
 
     File.write!(wrapper, script)
@@ -196,18 +192,44 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
       )
 
     Task.start(fn ->
-      Process.sleep(60_000)
+      Process.sleep(300_000)
       File.rm(wrapper)
     end)
 
     {:ok, port}
   end
 
+  defp write_remote_mcp_config(workspace, nil) do
+    # Local worker — write directly
+    case SymphonyElixir.ClaudeCode.McpConfig.write_mcp_config(workspace) do
+      {:ok, _path} -> true
+      _ -> false
+    end
+  end
+
+  defp write_remote_mcp_config(workspace, worker_host) when is_binary(worker_host) do
+    # SSH worker — generate the JSON locally then write it to the remote host
+    case SymphonyElixir.ClaudeCode.McpConfig.build_mcp_json() do
+      {:ok, json} ->
+        b64_json = Base.encode64(json)
+        mcp_path = Path.join(workspace, ".mcp.json")
+        cmd = "printf '%s' '#{b64_json}' | base64 -d > #{shell_escape(mcp_path)}"
+
+        case SSH.run(worker_host, cmd, stderr_to_stdout: true) do
+          {:ok, {_, 0}} -> true
+          _ -> false
+        end
+
+      :skip ->
+        false
+    end
+  end
+
   defp auth_env_exports do
     # Export auth env vars inside the bash -lc command. The token values are
     # read from the Elixir runtime and embedded directly. They're safe for
     # single-quote shell escaping because they're alphanumeric + hyphens.
-    ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+    ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GH_TOKEN", "GITHUB_TOKEN"]
     |> Enum.flat_map(fn env_name ->
       case System.get_env(env_name) do
         nil -> []
@@ -256,34 +278,38 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     case Jason.decode(data) do
       {:ok, %{"type" => "system"} = event} ->
         session_id = get_in(event, ["session_id"]) || acc[:session_id]
-        emit(on_message, :session_started, event)
+        emit(on_message, :session_started, event, %{session_id: session_id})
         receive_loop(port, on_message, timeout_ms, "", Map.put(acc, :session_id, session_id))
 
       {:ok, %{"type" => "assistant"} = event} ->
         acc = extract_token_usage(acc, event)
-        emit(on_message, :notification, event)
+        emit(on_message, :notification, event, %{
+          session_id: acc[:session_id],
+          usage: %{input_tokens: acc[:input_tokens] || 0, output_tokens: acc[:output_tokens] || 0, total_tokens: (acc[:input_tokens] || 0) + (acc[:output_tokens] || 0)}
+        })
         receive_loop(port, on_message, timeout_ms, "", acc)
 
       {:ok, %{"type" => "result"} = event} ->
         acc = extract_result(acc, event)
+        usage = result_usage(event)
 
         if event["is_error"] do
-          emit(on_message, :turn_failed, event)
+          emit(on_message, :turn_failed, event, %{session_id: acc[:session_id], usage: usage})
         else
-          emit(on_message, :turn_completed, event)
+          emit(on_message, :turn_completed, event, %{session_id: acc[:session_id], usage: usage})
         end
 
         receive_loop(port, on_message, timeout_ms, "", acc)
 
       {:ok, event} ->
-        # json output mode: single result object without a "type" field
         acc = extract_result(acc, event)
         acc = extract_token_usage(acc, event)
+        usage = result_usage(event)
 
         if event["is_error"] do
-          emit(on_message, :turn_failed, event)
+          emit(on_message, :turn_failed, event, %{session_id: acc[:session_id], usage: usage})
         else
-          emit(on_message, :turn_completed, event)
+          emit(on_message, :turn_completed, event, %{session_id: acc[:session_id], usage: usage})
         end
 
         receive_loop(port, on_message, timeout_ms, "", acc)
@@ -316,11 +342,32 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     |> Map.put(:is_error, event["is_error"] || false)
   end
 
-  defp emit(on_message, event_type, payload) when is_function(on_message, 1) do
-    on_message.(%{type: event_type, payload: payload})
+  defp emit(on_message, event_type, payload, extras \\ %{})
+       when is_function(on_message, 1) do
+    # Match the Codex event format so the orchestrator's codex_worker_update
+    # handler recognizes the message. Include session_id and usage at the top
+    # level for the orchestrator's token tracking and session display.
+    msg =
+      Map.merge(extras, %{
+        event: event_type,
+        timestamp: System.system_time(:millisecond),
+        message: payload
+      })
+
+    on_message.(msg)
     :ok
   rescue
     _ -> :ok
+  end
+
+  defp result_usage(event) do
+    usage = event["usage"] || %{}
+
+    %{
+      input_tokens: usage["input_tokens"] || 0,
+      output_tokens: usage["output_tokens"] || 0,
+      total_tokens: (usage["input_tokens"] || 0) + (usage["output_tokens"] || 0)
+    }
   end
 
   # -- Workspace validation (shared pattern with Codex.AppServer) --

@@ -75,7 +75,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         events = :ets.new(:test_events, [:bag, :public])
 
         on_message = fn msg ->
-          :ets.insert(events, {msg.type, msg})
+          :ets.insert(events, {msg.event, msg})
         end
 
         assert {:ok, result} =
@@ -185,7 +185,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServerTest do
         }
 
         on_message = fn msg ->
-          send(self(), {:event, msg.type})
+          send(self(), {:event, msg.event})
         end
 
         assert {:error, {:claude_code_error, result}} =

@@ -18,21 +18,49 @@ defmodule SymphonyElixir.ClaudeCode.McpConfig do
     tracker = settings.tracker
     claude_code = settings.claude_code
 
-    case claude_code.tracker_mcp_command do
+    server_entry =
+      case claude_code.tracker_mcp_command do
+        cmd when is_binary(cmd) and cmd != "" ->
+          build_server_entry(cmd, claude_code.tracker_mcp_args, tracker)
+
+        _ ->
+          default_tracker_mcp(tracker)
+      end
+
+    case server_entry do
       nil ->
         :skip
 
-      "" ->
-        :skip
-
-      command ->
-        server_entry = build_server_entry(command, claude_code.tracker_mcp_args, tracker)
+      entry ->
         path = Path.join(workspace, @config_filename)
-        write_merged_config(path, server_entry)
+        write_merged_config(path, entry)
     end
   rescue
     error in [File.Error] ->
       {:error, {:mcp_config_write_failed, Exception.message(error)}}
+  end
+
+  @spec build_mcp_json() :: {:ok, String.t()} | :skip
+  def build_mcp_json do
+    settings = Config.settings!()
+    tracker = settings.tracker
+    claude_code = settings.claude_code
+
+    server_entry =
+      case claude_code.tracker_mcp_command do
+        cmd when is_binary(cmd) and cmd != "" ->
+          build_server_entry(cmd, claude_code.tracker_mcp_args, tracker)
+
+        _ ->
+          default_tracker_mcp(tracker)
+      end
+
+    case server_entry do
+      nil -> :skip
+      entry ->
+        config = %{"mcpServers" => %{@server_key => entry}}
+        {:ok, Jason.encode!(config, pretty: true)}
+    end
   end
 
   @spec cleanup_mcp_config(Path.t()) :: :ok
@@ -55,6 +83,25 @@ defmodule SymphonyElixir.ClaudeCode.McpConfig do
 
     :ok
   end
+
+  # Auto-configure the official Plane MCP server with PAT auth via mcp-remote.
+  # See https://developers.plane.so/dev-tools/mcp-server
+  defp default_tracker_mcp(%{kind: "plane", api_key: api_key, workspace_slug: ws_slug})
+       when is_binary(api_key) and is_binary(ws_slug) do
+    %{
+      "command" => "npx",
+      "args" => [
+        "mcp-remote@latest",
+        "https://mcp.plane.so/http/api-key/mcp",
+        "--header",
+        "Authorization: Bearer #{api_key}",
+        "--header",
+        "X-Workspace-slug: #{ws_slug}"
+      ]
+    }
+  end
+
+  defp default_tracker_mcp(_tracker), do: nil
 
   defp build_server_entry(command, args, tracker) do
     entry = %{"command" => command}
