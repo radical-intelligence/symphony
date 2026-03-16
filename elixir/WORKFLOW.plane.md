@@ -55,6 +55,15 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+  # Agent backend selection — which agent handles work items.
+  #   "codex"       — use Codex for all states (default)
+  #   "claude_code" — use Claude Code for all states
+  #   "any"         — alternate between Codex and Claude Code per dispatch
+  agent_kind: codex
+  # Per-state overrides — use a specific agent for certain workflow states.
+  # agent_kind_by_state:
+  #   "In Progress": claude_code
+  #   "Rework": codex
 codex:
   # Host-worker mode — prepend PATH and GitHub token passthrough so they are
   # available in the remote SSH session.
@@ -66,13 +75,30 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
+# Claude Code agent backend — uncomment to enable.
+# Prerequisites for SSH host-worker mode:
+#   1. Install Claude Code on the worker host: https://docs.anthropic.com/en/docs/claude-code
+#   2. Run `claude setup-token` once on the worker host to create a long-lived
+#      auth token that works without macOS Keychain access. This is required
+#      because non-interactive SSH sessions cannot access Keychain-stored OAuth
+#      credentials. The token uses your existing Claude subscription.
+#   3. Set `command` to the absolute path of the `claude` binary on the worker.
+# claude_code:
+#   command: /Users/<you>/.local/bin/claude
+#   permission_mode: dangerously-skip-permissions
+#   model: claude-sonnet-4-20250514
+#   # Tracker MCP server — Symphony writes .mcp.json into each workspace so
+#   # Claude Code auto-discovers the tracker. Set the command that runs your
+#   # tracker's MCP server (credentials are injected via env vars).
+#   tracker_mcp_command: plane-mcp-server
+#   # tracker_mcp_args: ["--verbose"]
 # Phoenix dashboard — exposes the observability UI on all interfaces.
 server:
   port: 4103
   host: 0.0.0.0
 ---
 
-You are working on a Plane work item `{{ issue.identifier }}`.
+You are working on a Plane work item `{{ issue.identifier }}` (agent: {{ agent_kind }}).
 
 {% if attempt %}
 Continuation context:

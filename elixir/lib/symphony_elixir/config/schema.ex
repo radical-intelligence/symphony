@@ -155,11 +155,15 @@ defmodule SymphonyElixir.Config.Schema do
     alias SymphonyElixir.Config.Schema
 
     @primary_key false
+    @valid_agent_kinds ["codex", "claude_code", "any"]
+
     embedded_schema do
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:agent_kind, :string, default: "codex")
+      field(:agent_kind_by_state, :map, default: %{})
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -167,14 +171,42 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state, :agent_kind, :agent_kind_by_state],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_inclusion(:agent_kind, @valid_agent_kinds)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
+      |> update_change(:agent_kind_by_state, &normalize_agent_kind_by_state/1)
+      |> validate_agent_kind_by_state()
+    end
+
+    defp normalize_agent_kind_by_state(nil), do: %{}
+
+    defp normalize_agent_kind_by_state(state_map) when is_map(state_map) do
+      Enum.reduce(state_map, %{}, fn {state_name, kind}, acc ->
+        Map.put(acc, Schema.normalize_issue_state(to_string(state_name)), to_string(kind))
+      end)
+    end
+
+    defp validate_agent_kind_by_state(changeset) do
+      validate_change(changeset, :agent_kind_by_state, fn :agent_kind_by_state, state_map ->
+        Enum.flat_map(state_map, fn {state_name, kind} ->
+          cond do
+            to_string(state_name) == "" ->
+              [{:agent_kind_by_state, "state names must not be blank"}]
+
+            to_string(kind) not in @valid_agent_kinds ->
+              [{:agent_kind_by_state, "agent kind '#{kind}' for state '#{state_name}' must be one of: #{Enum.join(@valid_agent_kinds, ", ")}"}]
+
+            true ->
+              []
+          end
+        end)
+      end)
     end
   end
 
@@ -223,6 +255,36 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_required([:command])
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
+      |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+    end
+  end
+
+  defmodule ClaudeCode do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:command, :string, default: "claude")
+      field(:permission_mode, :string, default: "dangerously-skip-permissions")
+      field(:model, :string)
+      field(:turn_timeout_ms, :integer, default: 3_600_000)
+      field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:tracker_mcp_command, :string)
+      field(:tracker_mcp_args, {:array, :string}, default: [])
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [:command, :permission_mode, :model, :turn_timeout_ms, :stall_timeout_ms, :tracker_mcp_command, :tracker_mcp_args],
+        empty_values: []
+      )
+      |> validate_required([:command])
+      |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
     end
   end
@@ -296,6 +358,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:claude_code, ClaudeCode, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -388,6 +451,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:claude_code, with: &ClaudeCode.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)

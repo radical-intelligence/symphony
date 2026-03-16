@@ -1,11 +1,10 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single Linear issue in its workspace with Codex.
+  Executes a single issue in its workspace with the configured agent backend.
   """
 
   require Logger
-  alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Agent, Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -51,7 +50,7 @@ defmodule SymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            run_agent_turns(workspace, issue, codex_update_recipient, opts, worker_host)
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -92,25 +91,53 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+  defp run_agent_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
+    agent_kind = Keyword.get(opts, :agent_kind, Config.settings!().agent.agent_kind)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    with {:ok, agent_module, session} <- start_session_with_fallback(workspace, worker_host, agent_kind) do
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_agent_turns(agent_module, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
-        AppServer.stop_session(session)
+        agent_module.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  defp start_session_with_fallback(workspace, worker_host, agent_kind) do
+    agent_module = Agent.adapter(agent_kind)
+
+    case agent_module.start_session(workspace, worker_host: worker_host) do
+      {:ok, session} ->
+        {:ok, agent_module, session}
+
+      {:error, reason} when agent_kind != "any" ->
+        if fallback_eligible?(reason) do
+          fallback_kind = alternate_agent_kind(agent_kind)
+          fallback_module = Agent.adapter(fallback_kind)
+
+          Logger.warning("Agent #{agent_kind} failed (#{inspect(reason)}), falling back to #{fallback_kind}")
+
+          case fallback_module.start_session(workspace, worker_host: worker_host) do
+            {:ok, session} -> {:ok, fallback_module, session}
+            {:error, reason} -> {:error, reason}
+          end
+        else
+          {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_run_agent_turns(agent_module, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
-           AppServer.run_turn(
-             app_session,
+           agent_module.run_turn(
+             session,
              prompt,
              issue,
              on_message: codex_message_handler(codex_update_recipient, issue)
@@ -121,8 +148,9 @@ defmodule SymphonyElixir.AgentRunner do
         {:continue, refreshed_issue} when turn_number < max_turns ->
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_codex_turns(
-            app_session,
+          do_run_agent_turns(
+            agent_module,
+            session,
             workspace,
             refreshed_issue,
             codex_update_recipient,
@@ -146,13 +174,20 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  defp fallback_eligible?({:rate_limited, _}), do: true
+  defp fallback_eligible?(_), do: false
+
+  defp alternate_agent_kind("codex"), do: "claude_code"
+  defp alternate_agent_kind("claude_code"), do: "codex"
+  defp alternate_agent_kind(kind), do: kind
+
   defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
 
   defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
     """
     Continuation guidance:
 
-    - The previous Codex turn completed normally, but the Linear issue is still in an active state.
+    - The previous agent turn completed normally, but the issue is still in an active state.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.

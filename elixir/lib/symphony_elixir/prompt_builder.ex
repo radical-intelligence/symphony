@@ -19,7 +19,8 @@ defmodule SymphonyElixir.PromptBuilder do
       %{
         "attempt" => Keyword.get(opts, :attempt),
         "issue" => issue |> Map.from_struct() |> to_solid_map(),
-        "tracker" => tracker_prompt_context()
+        "tracker" => tracker_prompt_context(),
+        "agent_kind" => Keyword.get(opts, :agent_kind, Config.settings!().agent.agent_kind)
       },
       @render_opts
     )

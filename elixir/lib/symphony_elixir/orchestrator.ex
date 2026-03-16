@@ -38,7 +38,8 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      agent_dispatch_counter: 0
     ]
   end
 
@@ -710,18 +711,19 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        {agent_kind, next_state} = resolve_agent_kind(state, issue)
+        spawn_issue_on_worker_host(next_state, issue, attempt, recipient, worker_host, agent_kind)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, agent_kind) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host, agent_kind: agent_kind)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} agent_kind=#{agent_kind} worker_host=#{worker_host || "local"}")
 
         running =
           Map.put(state.running, issue.id, %{
@@ -729,6 +731,7 @@ defmodule SymphonyElixir.Orchestrator do
             ref: ref,
             identifier: issue.identifier,
             issue: issue,
+            agent_kind: agent_kind,
             worker_host: worker_host,
             workspace_path: nil,
             session_id: nil,
@@ -994,6 +997,27 @@ defmodule SymphonyElixir.Orchestrator do
     Map.put(running_entry, key, value)
   end
 
+  defp resolve_agent_kind(%State{} = state, %Issue{state: issue_state}) do
+    config = Config.settings!()
+    by_state = config.agent.agent_kind_by_state
+    default_kind = config.agent.agent_kind
+
+    kind =
+      case Map.get(by_state, normalize_issue_state(issue_state || "")) do
+        kind when is_binary(kind) and kind != "" -> kind
+        _ -> default_kind
+      end
+
+    resolve_any_agent_kind(state, kind)
+  end
+
+  defp resolve_any_agent_kind(%State{agent_dispatch_counter: counter} = state, "any") do
+    kind = if rem(counter, 2) == 0, do: "codex", else: "claude_code"
+    {kind, %{state | agent_dispatch_counter: counter + 1}}
+  end
+
+  defp resolve_any_agent_kind(state, kind), do: {kind, state}
+
   defp select_worker_host(%State{} = state, preferred_worker_host) do
     case Config.settings!().worker.ssh_hosts do
       [] ->
@@ -1134,6 +1158,7 @@ defmodule SymphonyElixir.Orchestrator do
           issue_id: issue_id,
           identifier: metadata.identifier,
           state: metadata.issue.state,
+          agent_kind: Map.get(metadata, :agent_kind, "codex"),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,

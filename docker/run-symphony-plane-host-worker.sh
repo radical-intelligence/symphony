@@ -72,6 +72,7 @@ docker run -d \
   -e PROJECT_REPO_URL \
   -e GH_TOKEN \
   -e GITHUB_TOKEN \
+  -e CLAUDE_CODE_OAUTH_TOKEN \
   -e SYMPHONY_WORKSPACE_ROOT \
   -e SYMPHONY_SSH_CONFIG=/run/secrets/symphony_ssh_config \
   -v "${ROOT_DIR}:/work" \

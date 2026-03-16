@@ -5,3 +5,4 @@
 .tmp/
 docker/symphony_ssh_config.local
 docker/run-battlestars-plane-host-worker.sh
+elixir/WORKFLOW.*.test.md

@@ -27,12 +27,25 @@ Supported tracker adapters today:
 - `notion` (experimental): polls a Notion data source via the REST API
 - `memory`: in-memory tracker for tests and local harnesses
 
+Supported agent backends:
+
+- `codex`: OpenAI Codex via the app-server JSON-RPC protocol (default)
+- `claude_code`: Anthropic Claude Code via CLI with JSON event streaming
+
+Both agents can be used in the same project. The `agent.agent_kind` config selects the default
+backend (`"codex"`, `"claude_code"`, or `"any"` to alternate), and `agent.agent_kind_by_state`
+allows per-state overrides. On persistent errors (e.g. rate limits), Symphony automatically falls
+back to the alternate agent.
+
 During tracker-backed app-server sessions, Symphony also serves a client-side tool for raw tracker
 access:
 
-- `linear_graphql` for Linear workflows
-- `plane_api` for Plane workflows
-- `notion_api` for Notion workflows
+- `linear_graphql` for Linear workflows (Codex sessions)
+- `plane_api` for Plane workflows (Codex sessions)
+- `notion_api` for Notion workflows (Codex sessions)
+
+For Claude Code sessions, configure `claude_code.tracker_mcp_command` to have Symphony write a
+`.mcp.json` into each workspace so Claude Code auto-discovers the tracker MCP server.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -84,6 +97,28 @@ Symphony stops the active agent for that issue and cleans up matching workspaces
      - If you want Symphony to route only tasks assigned to a specific user, set
        `tracker.assignee` and `tracker.assignee_property`.
 6. Follow the instructions below to install the required runtime dependencies and start the service.
+
+## Claude Code setup (optional)
+
+To use Claude Code as an agent backend (instead of or alongside Codex):
+
+1. Install Claude Code on the worker host: see
+   [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code).
+2. If running Symphony in Docker with SSH workers on the host, run `claude setup-token` once on
+   the worker host. This creates a long-lived auth token that works without macOS Keychain access.
+   Non-interactive SSH sessions cannot access Keychain-stored OAuth credentials, so this step is
+   required for the Docker-to-host SSH pattern. The token uses your existing Claude subscription
+   — no separate API key needed.
+3. Set `agent.agent_kind: claude_code` (or `any`) in your `WORKFLOW.md`.
+4. Add a `claude_code` config block with the absolute path to the `claude` binary on the worker:
+   ```yaml
+   claude_code:
+     command: /Users/<you>/.local/bin/claude
+     permission_mode: dangerously-skip-permissions
+     model: claude-sonnet-4-20250514
+   ```
+5. Optionally set `claude_code.tracker_mcp_command` to have Symphony inject tracker tools into
+   each workspace via `.mcp.json`.
 
 ## Prerequisites
 
@@ -280,6 +315,19 @@ Notes:
   auth. The tool accepts a relative REST path plus optional HTTP method and JSON body.
 - The bundled Notion workflow template uses append-only page comments for progress/handoff notes
   rather than trying to edit a single persistent comment in place.
+- `agent.agent_kind` selects the default agent backend: `"codex"` (default), `"claude_code"`, or
+  `"any"` (alternates between them per dispatch).
+- `agent.agent_kind_by_state` overrides the agent for specific workflow states (e.g.
+  `{"In Progress": "claude_code", "Rework": "codex"}`).
+- On persistent errors (rate limits), Symphony falls back to the alternate agent automatically.
+- `claude_code.command` is the shell command to launch Claude Code (default: `"claude"`). Use an
+  absolute path for SSH host-worker mode.
+- `claude_code.permission_mode` controls Claude Code's permission mode (default:
+  `"dangerously-skip-permissions"`).
+- `claude_code.model` sets the Claude model (e.g. `"claude-sonnet-4-20250514"`).
+- `claude_code.tracker_mcp_command` and `claude_code.tracker_mcp_args` configure the tracker MCP
+  server that Symphony injects into each workspace via `.mcp.json`. If unset, no `.mcp.json` is
+  written.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
   while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
