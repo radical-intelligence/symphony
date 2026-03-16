@@ -59,7 +59,7 @@ agent:
   #   "codex"       — use Codex for all states (default)
   #   "claude_code" — use Claude Code for all states
   #   "any"         — alternate between Codex and Claude Code per dispatch
-  agent_kind: codex
+  agent_kind: claude_code
   # Per-state overrides — use a specific agent for certain workflow states.
   # agent_kind_by_state:
   #   "In Progress": claude_code
@@ -75,23 +75,15 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
-# Claude Code agent backend — uncomment to enable.
+# Claude Code agent backend.
 # Prerequisites for SSH host-worker mode:
-#   1. Install Claude Code on the worker host: https://docs.anthropic.com/en/docs/claude-code
-#   2. Run `claude setup-token` once on the worker host to create a long-lived
-#      auth token that works without macOS Keychain access. This is required
-#      because non-interactive SSH sessions cannot access Keychain-stored OAuth
-#      credentials. The token uses your existing Claude subscription.
-#   3. Set `command` to the absolute path of the `claude` binary on the worker.
-# claude_code:
-#   command: /Users/<you>/.local/bin/claude
-#   permission_mode: dangerously-skip-permissions
-#   model: claude-sonnet-4-20250514
-#   # Tracker MCP server — Symphony writes .mcp.json into each workspace so
-#   # Claude Code auto-discovers the tracker. Set the command that runs your
-#   # tracker's MCP server (credentials are injected via env vars).
-#   tracker_mcp_command: plane-mcp-server
-#   # tracker_mcp_args: ["--verbose"]
+#   1. Install Claude Code on the worker host
+#   2. Run `claude setup-token` once on the worker host
+#   3. Set CLAUDE_CODE_OAUTH_TOKEN in .env.plane.local
+claude_code:
+  command: /Users/pandemosthenous/.local/bin/claude
+  permission_mode: dangerously-skip-permissions
+  # model: opus
 # Phoenix dashboard — exposes the observability UI on all interfaces.
 server:
   port: 4103
@@ -128,17 +120,32 @@ Instructions:
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
 2. Only stop early for a true blocker such as missing required auth, permissions, secrets, repository bootstrap, or required external-source access. If blocked, record it in the workpad and move the work item according to workflow.
 3. Work only in the provided repository copy. Do not touch any other path.
-4. Use the `plane_api` dynamic tool for all Plane tracker interactions.
+4. Use the available Plane tools for all Plane tracker interactions. When running as `claude_code`, use the Plane MCP server tools (e.g. list work items, update work item, create comment, etc.). When running as `codex`, use the `plane_api` dynamic tool with REST paths.
 5. Plane comments use HTML. Maintain exactly one persistent Plane workpad comment as the source of truth for progress, validation, blockers, and handoff.
 6. If the work item description, comments, or acceptance criteria reference an external URL, document, or source and the requested output depends on that source, fetch and inspect it directly before relying on it.
 7. If external-source access is required and you cannot retrieve the source from the current session, do not guess from prior knowledge. Record the blocker in the workpad and leave the work item in a non-terminal state.
 
-## Prerequisite: Plane API tool is available
+## Prerequisite: Plane tracker tools are available
 
-The agent must be able to use the injected `plane_api` tool. If it is unavailable, stop and report that the Plane tracker tool is missing.
+The agent must be able to interact with Plane. Depending on the agent backend:
+
+- **Claude Code (`claude_code`)**: Use the Plane MCP server tools injected via `.mcp.json`. These provide direct Plane operations (list/get/update work items, manage comments, etc.). Discover available tools via the MCP connection.
+- **Codex**: Use the injected `plane_api` dynamic tool with relative REST paths.
+
+If no Plane tools are available, stop and report the blocker.
 
 ## Required Plane operations
 
+{% if agent_kind == "claude_code" %}
+Use the Plane MCP tools to:
+- Get work item details and current state
+- Update work item state (e.g. move from Todo to In Progress)
+- List, create, update, and delete work item comments
+- Add links to work items
+- Create pages for durable output
+
+The workspace slug is `{{ tracker.workspace_slug }}` and the project ID is `{{ tracker.project_id }}`.
+{% else %}
 Use `plane_api` with relative REST paths such as:
 
 - `GET /workspaces/{{ tracker.workspace_slug }}/projects/{{ tracker.project_id }}/states/`
@@ -153,6 +160,7 @@ Use `plane_api` with relative REST paths such as:
 - `POST /workspaces/{{ tracker.workspace_slug }}/projects/{{ tracker.project_id }}/work-items/`
 - `POST /workspaces/{{ tracker.workspace_slug }}/projects/{{ tracker.project_id }}/pages/`
 - `POST /workspaces/{{ tracker.workspace_slug }}/pages/`
+{% endif %}
 
 When updating the persistent workpad comment, overwrite the entire `comment_html` body with the latest workpad state. Do not create append-only progress comments when the workpad can be updated in place.
 
@@ -175,10 +183,12 @@ This template assumes the review-loop state names `Todo`, `In Progress`, `Human 
 
 ## Related skills
 
+Skills are available in the workspace under `.codex/skills/` (Codex) or `.claude/skills/` (Claude Code). Reference the appropriate path for your agent type, or read the skill file directly when needed.
+
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
 - `pull`: keep branch updated with latest `origin/main` before handoff.
-- `land`: when the work item reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the landing loop.
+- `land`: when the work item reaches `Merging`, follow the `land` skill, which includes the landing loop.
 
 ## Durable delivery rule
 
@@ -213,7 +223,7 @@ This template assumes the review-loop state names `Todo`, `In Progress`, `Human 
      - If a PR is already linked, start by reviewing all open PR comments and deciding required changes versus explicit pushback responses.
    - `In Progress` -> continue execution flow from the current workpad comment.
    - `Human Review` -> wait and poll for decision or review updates. Do not make code changes in this state.
-   - `Merging` -> on entry, open and follow `.codex/skills/land/SKILL.md`; do not call `gh pr merge` directly.
+   - `Merging` -> on entry, open and follow the `land` skill; do not call `gh pr merge` directly.
    - `Rework` -> run the rework flow.
    - `Done` -> do nothing and shut down.
 5. Check whether a PR already exists for the current branch and whether it is closed.
@@ -221,14 +231,14 @@ This template assumes the review-loop state names `Todo`, `In Progress`, `Human 
    - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
 6. For `Todo` work items, do startup sequencing in this exact order:
    - move the work item to `In Progress`
-   - find or create the `## Codex Workpad` bootstrap comment
+   - find or create the `## Agent Workpad` bootstrap comment
    - only then begin analysis, planning, and implementation work
 7. Add a short workpad note if state and work item content are inconsistent, then proceed with the safest flow.
 
 ## Step 1: Start or continue execution (Todo or In Progress)
 
 1. Find or create a single persistent workpad comment for the work item:
-   - Search existing comments for a marker header: `## Codex Workpad`.
+   - Search existing comments for a marker header: `## Agent Workpad`.
    - Reuse that comment if found; do not create a new workpad comment.
    - If not found, create one workpad comment and use it for all updates.
    - Persist the workpad comment ID mentally for the turn and only write progress updates to that comment ID.
@@ -337,11 +347,11 @@ Use this only when completion is blocked by missing required tools or missing au
 1. Treat `Rework` as a full approach reset, not incremental patching.
 2. Re-read the full work item body, all comments, all attached links, and all PR review feedback; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the work item if it is superseded by the rework.
-4. Remove the existing `## Codex Workpad` comment from the work item.
+4. Remove the existing `## Agent Workpad` comment from the work item.
 5. Create a fresh branch from `origin/main`.
 6. Start over from the normal kickoff flow:
    - if current work item state is `Todo`, move it to `In Progress`; otherwise keep the current state
-   - create a new bootstrap `## Codex Workpad` comment
+   - create a new bootstrap `## Agent Workpad` comment
    - build a fresh plan, acceptance criteria, validation checklist, and artifacts section
    - execute end to end
 
@@ -362,7 +372,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - For closed or merged branch PRs, create a new branch from `origin/main` and restart from reproduction and planning as if starting fresh.
 - If work item state is `Backlog`, do not modify it; wait for a human to move it to `Todo`.
 - Do not edit the work item body or description for planning or progress tracking.
-- Use exactly one persistent workpad comment (`## Codex Workpad`) per work item.
+- Use exactly one persistent workpad comment (`## Agent Workpad`) per work item.
 - If comment editing is unavailable in-session, use the Plane comment update endpoint directly via `plane_api`. Only report blocked if both creation and update paths are unavailable.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
 - If out-of-scope improvements are found, create a separate `Backlog` work item rather than expanding current scope.
@@ -374,43 +384,10 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Workpad template
 
-Store the workpad as a single Plane comment whose `comment_html` wraps the entire body in a single `<pre><code>...</code></pre>` block with the contents HTML-escaped. Keep this structure updated in place throughout execution:
+Store the workpad as a single Plane comment using HTML in the `comment_html` field. Plane does NOT render markdown — you must use HTML tags directly. Use `<h2>`/`<h3>` for headings, `<ul><li>` for lists, `<strong>` for bold, `<code>` for inline code, and `<pre><code>` for code blocks. For checklist items use unicode: ✅ (done) and ☐ (pending) — do NOT use `<input type="checkbox">` as Plane renders it as empty bullets. Minimize whitespace between tags to avoid blank lines.
 
-````md
-## Codex Workpad
+Example `comment_html`:
 
-```text
-<hostname>:<abs-path>@<short-sha>
+```html
+<h2>Agent Workpad</h2><p><code>hostname:abs-path@short-sha</code></p><h3>Plan</h3><ul><li>☐ 1. Parent task<ul><li>☐ 1.1 Child task</li><li>✅ 1.2 Child task</li></ul></li><li>☐ 2. Parent task</li></ul><h3>Acceptance Criteria</h3><ul><li>☐ Criterion 1</li><li>✅ Criterion 2</li></ul><h3>Validation</h3><ul><li>☐ targeted tests: <code>command</code></li></ul><h3>Artifacts</h3><ul><li>Branch: <code>branch or none</code></li><li>PR: <a href="url">url</a> or none</li><li>Plane page/wiki: none</li></ul><h3>Notes</h3><ul><li>short progress note with timestamp</li></ul>
 ```
-
-### Plan
-
-- [ ] 1\. Parent task
-  - [ ] 1.1 Child task
-  - [ ] 1.2 Child task
-- [ ] 2\. Parent task
-
-### Acceptance Criteria
-
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-### Validation
-
-- [ ] targeted tests: `<command>`
-
-### Artifacts
-
-- Branch: `<branch or none>`
-- PR: `<url or none>`
-- Plane page/wiki: `<url or none>`
-- External sources consulted: `<urls or none>`
-
-### Notes
-
-- <short progress note with timestamp>
-
-### Confusions
-
-- <only include when something was confusing during execution>
-````
