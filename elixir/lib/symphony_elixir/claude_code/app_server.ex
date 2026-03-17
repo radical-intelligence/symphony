@@ -291,7 +291,8 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
       {:ok, %{"type" => "result"} = event} ->
         acc = extract_result(acc, event)
-        usage = result_usage(event)
+        acc = extract_token_usage(acc, event)
+        usage = acc_usage(acc)
 
         if event["is_error"] do
           emit(on_message, :turn_failed, event, %{session_id: acc[:session_id], usage: usage})
@@ -301,10 +302,14 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
         receive_loop(port, on_message, timeout_ms, "", acc)
 
+      {:ok, %{"type" => "rate_limit_event"}} ->
+        # Rate limit events have no useful content for the dashboard
+        receive_loop(port, on_message, timeout_ms, "", acc)
+
       {:ok, event} ->
         acc = extract_result(acc, event)
         acc = extract_token_usage(acc, event)
-        usage = result_usage(event)
+        usage = acc_usage(acc)
 
         if event["is_error"] do
           emit(on_message, :turn_failed, event, %{session_id: acc[:session_id], usage: usage})
@@ -322,9 +327,15 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
 
   defp extract_token_usage(acc, event) do
     case get_in(event, ["message", "usage"]) || event["usage"] do
-      %{"input_tokens" => input, "output_tokens" => output} ->
+      %{"input_tokens" => input, "output_tokens" => output} = usage ->
+        # Include cache tokens in the input count since they represent
+        # actual context processed by the model.
+        cache_read = usage["cache_read_input_tokens"] || 0
+        cache_create = usage["cache_creation_input_tokens"] || 0
+        total_input = input + cache_read + cache_create
+
         acc
-        |> Map.update(:input_tokens, input, &(&1 + input))
+        |> Map.update(:input_tokens, total_input, &(&1 + total_input))
         |> Map.update(:output_tokens, output, &(&1 + output))
 
       _ ->
@@ -350,6 +361,7 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     msg =
       Map.merge(extras, %{
         event: event_type,
+        method: event_type_to_method(event_type),
         timestamp: System.system_time(:millisecond),
         message: payload
       })
@@ -360,14 +372,16 @@ defmodule SymphonyElixir.ClaudeCode.AppServer do
     _ -> :ok
   end
 
-  defp result_usage(event) do
-    usage = event["usage"] || %{}
+  defp event_type_to_method(:session_started), do: "session/started"
+  defp event_type_to_method(:turn_completed), do: "turn/completed"
+  defp event_type_to_method(:turn_failed), do: "turn/failed"
+  defp event_type_to_method(:notification), do: "notification"
+  defp event_type_to_method(other), do: to_string(other)
 
-    %{
-      input_tokens: usage["input_tokens"] || 0,
-      output_tokens: usage["output_tokens"] || 0,
-      total_tokens: (usage["input_tokens"] || 0) + (usage["output_tokens"] || 0)
-    }
+  defp acc_usage(acc) do
+    input = acc[:input_tokens] || 0
+    output = acc[:output_tokens] || 0
+    %{input_tokens: input, output_tokens: output, total_tokens: input + output}
   end
 
   # -- Workspace validation (shared pattern with Codex.AppServer) --
